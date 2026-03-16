@@ -1,0 +1,2626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mise en Place — Family Recipe Manager</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Mise en Place">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽</text></svg>">
+
+  <!-- React -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+
+  <!-- Firebase (compat mode for simplicity) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { min-height: 100vh; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ─── Storage helpers ───────────────────────────────────────────
+// ─── Firebase Setup ────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyDgh9VuZ5s2LjaAc4oiKxda1LwCxpzylBI",
+  authDomain: "krackers-meals.firebaseapp.com",
+  projectId: "krackers-meals",
+  storageBucket: "krackers-meals.firebasestorage.app",
+  messagingSenderId: "56047072196",
+  appId: "1:56047072196:web:fc4a3ce662515a8f126a91"
+};
+
+const fbApp = firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const COLLECTION = "app-data";
+
+const store = {
+  async get(key) {
+    try {
+      const doc = await db.collection(COLLECTION).doc(key).get();
+      return doc.exists ? doc.data().value : null;
+    } catch (e) { console.error("Store get error:", e); return null; }
+  },
+  async set(key, val) {
+    try {
+      await db.collection(COLLECTION).doc(key).set({ value: val, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+    } catch (e) { console.error("Store set error:", e); }
+  },
+  async del(key) {
+    try {
+      await db.collection(COLLECTION).doc(key).delete();
+    } catch (e) { console.error("Store del error:", e); }
+  },
+  // Real-time listener for syncing across devices
+  onSnapshot(key, callback) {
+    return db.collection(COLLECTION).doc(key).onSnapshot(doc => {
+      if (doc.exists) callback(doc.data().value);
+    });
+  }
+};
+
+// ─── Constants ─────────────────────────────────────────────────
+const CUISINES = ["Italian", "Mexican", "Asian", "Indian", "American", "Mediterranean", "French", "Thai", "Japanese", "Other"];
+const DIFFICULTIES = ["Easy", "Medium", "Hard"];
+const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const MEAL_TYPES = ["Breakfast", "Lunch", "Dinner"];
+const MEAL_TAGS = ["Dinner", "Breakfast", "Meal Prep", "Snack", "Bakery"];
+const MEAL_TAG_STYLES = {
+  "Dinner": { bg: "#EDE9FE", color: "#5B21B6", icon: "🍽" },
+  "Breakfast": { bg: "#FEF3C7", color: "#92400E", icon: "🌅" },
+  "Meal Prep": { bg: "#DBEAFE", color: "#1E40AF", icon: "📦" },
+  "Snack": { bg: "#FCE7F3", color: "#9D174D", icon: "🍪" },
+  "Bakery": { bg: "#FDE8CD", color: "#9A3412", icon: "🧁" },
+};
+const AISLES = ["Produce", "Dairy", "Meat & Seafood", "Pantry/Dry Goods", "Frozen", "Bakery", "Spices & Seasonings", "Other"];
+const UNITS = ["", "g", "kg", "ml", "l", "tsp", "tbsp", "piece", "pinch", "clove", "can", "bunch", "slice"];
+
+const AISLE_KEYWORDS = {
+  "Produce": ["lettuce", "tomato", "onion", "garlic", "pepper", "carrot", "potato", "celery", "mushroom", "spinach", "kale", "broccoli", "zucchini", "cucumber", "avocado", "lemon", "lime", "ginger", "cilantro", "parsley", "basil", "mint", "scallion", "green onion", "bell pepper", "jalapeño", "chili", "corn", "pea", "bean sprout", "cabbage", "eggplant", "squash", "sweet potato", "apple", "banana", "berry", "orange", "fruit", "vegetable", "herb", "shallot", "leek"],
+  "Dairy": ["milk", "cheese", "butter", "cream", "yogurt", "egg", "sour cream", "mozzarella", "parmesan", "cheddar", "ricotta", "whipping cream", "half and half", "cream cheese"],
+  "Meat & Seafood": ["chicken", "beef", "pork", "salmon", "shrimp", "fish", "turkey", "lamb", "bacon", "sausage", "steak", "ground beef", "ground turkey", "prawn", "tuna", "cod", "tilapia", "crab", "lobster", "ham", "mince"],
+  "Pantry/Dry Goods": ["rice", "pasta", "noodle", "flour", "sugar", "oil", "vinegar", "soy sauce", "broth", "stock", "can", "bean", "lentil", "chickpea", "bread crumb", "panko", "cornstarch", "baking", "honey", "maple syrup", "peanut butter", "jam", "mustard", "ketchup", "mayo", "hot sauce", "sriracha", "sesame oil", "coconut milk", "tomato sauce", "tomato paste", "tortilla", "wrap", "oat", "cereal", "quinoa", "couscous"],
+  "Frozen": ["frozen", "ice cream"],
+  "Bakery": ["bread", "bun", "roll", "bagel", "croissant", "pita", "naan", "tortilla"],
+  "Spices & Seasonings": ["salt", "pepper", "cumin", "paprika", "oregano", "thyme", "rosemary", "cinnamon", "nutmeg", "turmeric", "curry", "chili powder", "cayenne", "bay leaf", "coriander", "fennel", "clove", "allspice", "cardamom", "saffron", "dill", "sage", "seasoning", "spice"]
+};
+
+function guessAisle(name) {
+  const n = name.toLowerCase();
+  for (const [aisle, keywords] of Object.entries(AISLE_KEYWORDS)) {
+    if (keywords.some(k => n.includes(k))) return aisle;
+  }
+  return "Other";
+}
+
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+// ─── RecipeTin Eats Starter Recipes ───────────────────────────
+const STARTER_RECIPES = [
+  {
+    id: "rte-001", name: "Honey Garlic Chicken Breast", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 5, cookTime: 12, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken breast", qty: 500, unit: "g" },
+      { id: "i2", name: "flour", qty: 0.25, unit: "cup" },
+      { id: "i3", name: "unsalted butter", qty: 3.5, unit: "tbsp" },
+      { id: "i4", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i5", name: "cider vinegar", qty: 1.5, unit: "tbsp" },
+      { id: "i6", name: "light soy sauce", qty: 1, unit: "tbsp" },
+      { id: "i7", name: "honey", qty: 0.33, unit: "cup" },
+    ],
+    steps: [
+      "Cut the breasts in half horizontally to create 4 steaks. Season with salt and pepper, then coat in flour, shaking off excess.",
+      "Melt most of the butter in a large skillet over high heat, reserving about 1 tsp. Cook chicken 2-3 min until golden, turn and cook the other side for 1 min.",
+      "Turn heat down to medium high. Make room in the pan, add garlic and remaining butter. Stir briefly once butter melts.",
+      "Add vinegar, soy sauce and honey. Stir to combine, bring to a simmer, then simmer 1 minute until slightly thickened.",
+      "Turn chicken to coat in sauce. If sauce gets too thick, add a touch of water. Remove from stove immediately and serve."
+    ]
+  },
+  {
+    id: "rte-002", name: "Sticky Honey Soy Baked Chicken", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 5, cookTime: 55, servings: 4,
+    ingredients: [
+      { id: "i1", name: "bone-in skin-on chicken thighs", qty: 1.2, unit: "kg" },
+      { id: "i2", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i3", name: "honey", qty: 3, unit: "tbsp" },
+      { id: "i4", name: "soy sauce", qty: 3, unit: "tbsp" },
+      { id: "i5", name: "apple cider vinegar", qty: 1, unit: "tbsp" },
+      { id: "i6", name: "sesame oil", qty: 0.5, unit: "tsp" },
+      { id: "i7", name: "black pepper", qty: 0.25, unit: "tsp" },
+    ],
+    steps: [
+      "Preheat oven to 200°C/390°F. Line a baking dish with foil then baking paper.",
+      "Mix garlic, honey, soy sauce, cider vinegar, sesame oil and pepper together for the glaze.",
+      "Place chicken in the baking dish skin-side up. Pour glaze over chicken.",
+      "Bake for 50-60 minutes, basting with pan juices every 20 minutes, until the glaze is sticky and caramelised and chicken is cooked through.",
+      "Remove from oven, let rest 5 minutes. Spoon over the sticky glaze from the pan when serving."
+    ]
+  },
+  {
+    id: "rte-003", name: "Beef & Broccoli Stir Fry", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "beef rump steak, thinly sliced", qty: 400, unit: "g" },
+      { id: "i2", name: "broccoli florets", qty: 300, unit: "g" },
+      { id: "i3", name: "soy sauce (light)", qty: 2, unit: "tbsp" },
+      { id: "i4", name: "dark soy sauce", qty: 1, unit: "tbsp" },
+      { id: "i5", name: "oyster sauce", qty: 2, unit: "tbsp" },
+      { id: "i6", name: "Chinese cooking wine", qty: 2, unit: "tbsp" },
+      { id: "i7", name: "cornstarch", qty: 2, unit: "tsp" },
+      { id: "i8", name: "sugar", qty: 1, unit: "tsp" },
+      { id: "i9", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i10", name: "peanut oil", qty: 1.5, unit: "tbsp" },
+      { id: "i11", name: "sesame oil", qty: 0.5, unit: "tsp" },
+      { id: "i12", name: "water", qty: 0.5, unit: "cup" },
+    ],
+    steps: [
+      "Mix cornstarch and water in a bowl, then add soy sauces, oyster sauce, cooking wine, sugar and sesame oil for the sauce.",
+      "Toss beef with 2 tbsp of the sauce and set aside while you prep other ingredients.",
+      "Blanch broccoli in boiling water for 1 minute, then drain.",
+      "Heat oil in a wok over high heat until smoking. Add beef, spread out and cook 1 minute until browned. Remove.",
+      "Add garlic to the wok, stir briefly. Pour in remaining sauce, let it bubble. When thickened, add broccoli and toss. Return beef, toss to coat. Serve over rice."
+    ]
+  },
+  {
+    id: "rte-004", name: "Beef Honey Pepper Stir Fry", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 8, servings: 4,
+    ingredients: [
+      { id: "i1", name: "beef sirloin, thinly sliced", qty: 500, unit: "g" },
+      { id: "i2", name: "onion, sliced", qty: 0.5, unit: "piece" },
+      { id: "i3", name: "honey", qty: 3, unit: "tbsp" },
+      { id: "i4", name: "soy sauce", qty: 2.5, unit: "tbsp" },
+      { id: "i5", name: "oyster sauce", qty: 1.5, unit: "tbsp" },
+      { id: "i6", name: "peanut oil", qty: 2, unit: "tbsp" },
+      { id: "i7", name: "Chinese cooking wine", qty: 1.5, unit: "tbsp" },
+      { id: "i8", name: "water", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "coarsely crushed black pepper", qty: 1, unit: "tsp" },
+      { id: "i10", name: "garlic clove, minced", qty: 1, unit: "piece" },
+    ],
+    steps: [
+      "Mix honey, soy sauce, oyster sauce, cooking wine, water and black pepper in a bowl for the sauce.",
+      "Heat oil in a wok over high heat until smoking. Add onion and garlic, cook 1 minute until translucent.",
+      "Add beef and stir fry for 1 minute until just cooked, then remove into a bowl.",
+      "Turn heat to medium high, pour in sauce. Let it cook 1 minute until it becomes syrupy with large caramel-coloured bubbles.",
+      "Return beef and onion to the wok with any juices. Toss in the sauce until warmed through — 1 minute at most. Serve immediately with rice."
+    ]
+  },
+  {
+    id: "rte-005", name: "Greek Chicken Gyros", mealTag: "Dinner", cuisine: "Mediterranean", difficulty: "Easy", prepTime: 15, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 750, unit: "g" },
+      { id: "i2", name: "Greek yogurt", qty: 0.75, unit: "cup" },
+      { id: "i3", name: "garlic cloves, minced", qty: 4, unit: "piece" },
+      { id: "i4", name: "olive oil", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "lemon juice", qty: 2, unit: "tbsp" },
+      { id: "i6", name: "dried oregano", qty: 2, unit: "tsp" },
+      { id: "i7", name: "cumin", qty: 1, unit: "tsp" },
+      { id: "i8", name: "paprika", qty: 1, unit: "tsp" },
+      { id: "i9", name: "pita bread", qty: 4, unit: "piece" },
+      { id: "i10", name: "tomato, diced", qty: 2, unit: "piece" },
+      { id: "i11", name: "red onion, thinly sliced", qty: 1, unit: "piece" },
+      { id: "i12", name: "cucumber, diced", qty: 1, unit: "piece" },
+    ],
+    steps: [
+      "Mix yogurt, garlic, olive oil, lemon juice, oregano, cumin, paprika, salt and pepper. Coat chicken and marinate at least 2 hours (overnight is best).",
+      "Heat a grill or skillet to medium-high. Cook chicken 4-5 minutes per side until charred and cooked through.",
+      "Rest chicken briefly, then slice into strips.",
+      "Warm pita bread. Fill with chicken, tomato, onion and cucumber.",
+      "Serve with tzatziki sauce or extra yogurt on the side."
+    ]
+  },
+  {
+    id: "rte-006", name: "Butter Chicken", mealTag: "Dinner", cuisine: "Indian", difficulty: "Medium", prepTime: 15, cookTime: 25, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless, cubed", qty: 800, unit: "g" },
+      { id: "i2", name: "Greek yogurt", qty: 0.5, unit: "cup" },
+      { id: "i3", name: "garam masala", qty: 1, unit: "tbsp" },
+      { id: "i4", name: "turmeric", qty: 1, unit: "tsp" },
+      { id: "i5", name: "chili powder", qty: 0.5, unit: "tsp" },
+      { id: "i6", name: "butter", qty: 3, unit: "tbsp" },
+      { id: "i7", name: "onion, finely diced", qty: 1, unit: "piece" },
+      { id: "i8", name: "garlic cloves, minced", qty: 4, unit: "piece" },
+      { id: "i9", name: "ginger, grated", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "tomato passata", qty: 400, unit: "ml" },
+      { id: "i11", name: "heavy cream", qty: 0.75, unit: "cup" },
+      { id: "i12", name: "sugar", qty: 1, unit: "tsp" },
+      { id: "i13", name: "rice, for serving", qty: 2, unit: "cup" },
+    ],
+    steps: [
+      "Mix chicken with yogurt, half the garam masala, turmeric and chili powder. Marinate for at least 30 minutes.",
+      "Melt butter in a large pan over medium heat. Cook onion until golden, about 5 minutes. Add garlic and ginger, cook 1 minute.",
+      "Add tomato passata, remaining garam masala and sugar. Simmer for 10 minutes, stirring occasionally, until thick.",
+      "Add marinated chicken pieces. Cook for 10-12 minutes until chicken is cooked through.",
+      "Stir in the cream, simmer 2-3 more minutes. Season with salt. Serve over basmati rice with naan bread."
+    ]
+  },
+  {
+    id: "rte-007", name: "Classic Pumpkin Soup", mealTag: "Meal Prep", cuisine: "Other", difficulty: "Easy", prepTime: 10, cookTime: 20, servings: 6,
+    ingredients: [
+      { id: "i1", name: "pumpkin, peeled and cubed", qty: 1.2, unit: "kg" },
+      { id: "i2", name: "onion, chopped", qty: 1, unit: "piece" },
+      { id: "i3", name: "garlic cloves", qty: 3, unit: "piece" },
+      { id: "i4", name: "chicken broth", qty: 3, unit: "cup" },
+      { id: "i5", name: "water", qty: 1, unit: "cup" },
+      { id: "i6", name: "heavy cream", qty: 0.5, unit: "cup" },
+      { id: "i7", name: "butter", qty: 1, unit: "tbsp" },
+    ],
+    steps: [
+      "Place pumpkin, onion, garlic, broth and water into a large pot.",
+      "Bring to a boil, then reduce heat and simmer rapidly for 15 minutes until pumpkin is very tender.",
+      "Use a stick blender or transfer to a blender and blitz until smooth.",
+      "Stir in cream and butter. Season with salt and pepper.",
+      "Serve with crusty bread for dipping."
+    ]
+  },
+  {
+    id: "rte-008", name: "Sausage Ragu with Pappardelle", mealTag: "Dinner", cuisine: "Italian", difficulty: "Medium", prepTime: 10, cookTime: 45, servings: 4,
+    ingredients: [
+      { id: "i1", name: "Italian sausages", qty: 500, unit: "g" },
+      { id: "i2", name: "pappardelle pasta", qty: 400, unit: "g" },
+      { id: "i3", name: "onion, finely diced", qty: 1, unit: "piece" },
+      { id: "i4", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i5", name: "crushed tomatoes (canned)", qty: 400, unit: "g" },
+      { id: "i6", name: "tomato paste", qty: 2, unit: "tbsp" },
+      { id: "i7", name: "red wine", qty: 0.5, unit: "cup" },
+      { id: "i8", name: "dried oregano", qty: 1, unit: "tsp" },
+      { id: "i9", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "parmesan cheese, grated", qty: 0.5, unit: "cup" },
+    ],
+    steps: [
+      "Remove sausage meat from casings. Heat olive oil in a large deep pan over high heat. Cook sausage meat, breaking it up, until browned.",
+      "Add onion and garlic, cook 3 minutes until softened.",
+      "Add red wine and let it simmer for 1-2 minutes until mostly reduced.",
+      "Add crushed tomatoes, tomato paste and oregano. Simmer on medium-low for 30 minutes, stirring occasionally, until thick and rich.",
+      "Cook pappardelle in salted boiling water per package directions. Drain, toss with ragu and serve with parmesan."
+    ]
+  },
+  {
+    id: "rte-009", name: "Thai Chicken (Gai Yang)", mealTag: "Dinner", cuisine: "Thai", difficulty: "Easy", prepTime: 15, cookTime: 20, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 800, unit: "g" },
+      { id: "i2", name: "garlic cloves, minced", qty: 4, unit: "piece" },
+      { id: "i3", name: "cilantro roots or stems, chopped", qty: 2, unit: "tbsp" },
+      { id: "i4", name: "lemongrass, finely sliced", qty: 1, unit: "piece" },
+      { id: "i5", name: "fish sauce", qty: 2, unit: "tbsp" },
+      { id: "i6", name: "soy sauce", qty: 1, unit: "tbsp" },
+      { id: "i7", name: "oyster sauce", qty: 1, unit: "tbsp" },
+      { id: "i8", name: "brown sugar", qty: 1, unit: "tbsp" },
+      { id: "i9", name: "white pepper", qty: 0.5, unit: "tsp" },
+      { id: "i10", name: "coconut milk", qty: 3, unit: "tbsp" },
+    ],
+    steps: [
+      "Blend or pound garlic, cilantro roots and lemongrass into a paste.",
+      "Mix with fish sauce, soy sauce, oyster sauce, brown sugar, white pepper and coconut milk.",
+      "Coat chicken in the marinade and refrigerate for at least 2 hours, or overnight.",
+      "Grill chicken over medium-high heat for 5-6 minutes per side until charred and cooked through.",
+      "Rest for a few minutes, then serve with sticky rice, Thai sweet chili sauce and fresh herbs."
+    ]
+  },
+  {
+    id: "rte-010", name: "Honey Sriracha Chicken Skewers", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 25, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thigh fillets, cubed", qty: 750, unit: "g" },
+      { id: "i2", name: "honey", qty: 0.33, unit: "cup" },
+      { id: "i3", name: "Dijon mustard", qty: 2, unit: "tbsp" },
+      { id: "i4", name: "soy sauce", qty: 4, unit: "tbsp" },
+      { id: "i5", name: "garlic cloves, crushed", qty: 2, unit: "piece" },
+      { id: "i6", name: "sriracha", qty: 2, unit: "tbsp" },
+      { id: "i7", name: "salt", qty: 0.25, unit: "tsp" },
+      { id: "i8", name: "oil", qty: 1.5, unit: "tbsp" },
+    ],
+    steps: [
+      "Mix honey, mustard, soy sauce, garlic, sriracha and salt until smooth. Reserve 4 tbsp for basting.",
+      "Toss chicken in the remaining marinade. Set aside for 20 minutes (up to overnight).",
+      "Thread chicken onto skewers. Discard marinade in the bowl.",
+      "Grill or cook in a skillet over medium-high heat for 3-4 minutes per side, basting with the reserved marinade, until charred and cooked through.",
+      "Serve with rice and a side salad."
+    ]
+  },
+  {
+    id: "rte-011", name: "Kalimera's Famous Chicken Gyros", mealTag: "Dinner", cuisine: "Mediterranean", difficulty: "Easy", prepTime: 10, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 1.25, unit: "kg" },
+      { id: "i2", name: "sweet paprika", qty: 1, unit: "tbsp" },
+      { id: "i3", name: "mustard powder", qty: 1, unit: "tbsp" },
+      { id: "i4", name: "dried oregano", qty: 1, unit: "tbsp" },
+      { id: "i5", name: "curry powder (mild)", qty: 0.5, unit: "tbsp" },
+      { id: "i6", name: "cooking salt", qty: 1.5, unit: "tsp" },
+      { id: "i7", name: "garlic powder", qty: 1, unit: "tsp" },
+      { id: "i8", name: "olive oil", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "pita bread", qty: 4, unit: "piece" },
+      { id: "i10", name: "tomato, sliced", qty: 2, unit: "piece" },
+      { id: "i11", name: "red onion, thinly sliced", qty: 1, unit: "piece" },
+    ],
+    steps: [
+      "Mix paprika, mustard powder, oregano, curry powder, salt and garlic powder. Rub all over chicken with olive oil.",
+      "Grill or cook in a hot skillet for 5-6 minutes per side until cooked through with nice char marks.",
+      "Rest chicken briefly, then slice into strips.",
+      "Warm pita bread and fill with chicken, tomato and red onion.",
+      "Top with your favourite sauce — garlic sauce, tzatziki or hummus."
+    ]
+  },
+  {
+    id: "rte-012", name: "Chinese Beef & Broccoli Noodles", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "beef rump steak, thinly sliced", qty: 350, unit: "g" },
+      { id: "i2", name: "egg noodles (hokkien or lo mein)", qty: 400, unit: "g" },
+      { id: "i3", name: "broccoli florets", qty: 250, unit: "g" },
+      { id: "i4", name: "soy sauce", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "oyster sauce", qty: 1.5, unit: "tbsp" },
+      { id: "i6", name: "Chinese cooking wine", qty: 1.5, unit: "tbsp" },
+      { id: "i7", name: "sesame oil", qty: 0.5, unit: "tsp" },
+      { id: "i8", name: "cornstarch", qty: 2, unit: "tsp" },
+      { id: "i9", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i10", name: "peanut oil", qty: 1.5, unit: "tbsp" },
+      { id: "i11", name: "water", qty: 0.5, unit: "cup" },
+    ],
+    steps: [
+      "Mix cornstarch and water, then add soy sauce, oyster sauce, cooking wine and sesame oil for the sauce.",
+      "Toss beef with 1.5 tbsp of the sauce and set aside.",
+      "Bring a large pot of water to the boil. Add broccoli, cook 1 minute. Add noodles for 15 seconds then drain immediately.",
+      "Heat oil in a large skillet over high heat. Add garlic, then beef. Stir fry 1-2 minutes until just cooked. Remove.",
+      "Pour remaining sauce into the skillet, let it bubble and thicken. Add noodles and broccoli, toss. Return beef, toss to coat and serve."
+    ]
+  },
+  {
+    id: "rte-013", name: "Chicken Korma", mealTag: "Dinner", cuisine: "Indian", difficulty: "Medium", prepTime: 20, cookTime: 30, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless, cubed", qty: 750, unit: "g" },
+      { id: "i2", name: "onions, finely sliced", qty: 2, unit: "piece" },
+      { id: "i3", name: "Greek yogurt", qty: 0.5, unit: "cup" },
+      { id: "i4", name: "heavy cream", qty: 0.5, unit: "cup" },
+      { id: "i5", name: "ground almonds", qty: 3, unit: "tbsp" },
+      { id: "i6", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i7", name: "ginger, grated", qty: 1, unit: "tbsp" },
+      { id: "i8", name: "garam masala", qty: 2, unit: "tsp" },
+      { id: "i9", name: "turmeric", qty: 0.5, unit: "tsp" },
+      { id: "i10", name: "cardamom pods", qty: 3, unit: "piece" },
+      { id: "i11", name: "ghee or butter", qty: 2, unit: "tbsp" },
+      { id: "i12", name: "coconut milk", qty: 0.5, unit: "cup" },
+      { id: "i13", name: "basmati rice, for serving", qty: 2, unit: "cup" },
+    ],
+    steps: [
+      "Heat ghee in a large pan. Cook onions on medium for 10-15 minutes until golden and caramelised.",
+      "Add garlic, ginger, cardamom, garam masala and turmeric. Cook 1-2 minutes until fragrant.",
+      "Add chicken pieces and cook for 5 minutes, turning, until sealed on all sides.",
+      "Stir in yogurt, coconut milk, ground almonds and a splash of water. Simmer gently for 15-20 minutes until chicken is cooked and sauce is thick.",
+      "Stir in cream. Season with salt. Serve over basmati rice, garnished with fresh cilantro."
+    ]
+  },
+  {
+    id: "rte-014", name: "Cheese, Herb & Garlic Quick Bread", mealTag: "Bakery", cuisine: "Other", difficulty: "Easy", prepTime: 10, cookTime: 30, servings: 8,
+    ingredients: [
+      { id: "i1", name: "self-raising flour", qty: 2.5, unit: "cup" },
+      { id: "i2", name: "butter, melted", qty: 60, unit: "g" },
+      { id: "i3", name: "egg", qty: 1, unit: "piece" },
+      { id: "i4", name: "milk", qty: 1, unit: "cup" },
+      { id: "i5", name: "cheddar cheese, grated", qty: 1.5, unit: "cup" },
+      { id: "i6", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i7", name: "fresh parsley, chopped", qty: 3, unit: "tbsp" },
+      { id: "i8", name: "fresh chives, chopped", qty: 2, unit: "tbsp" },
+    ],
+    steps: [
+      "Preheat oven to 180°C/350°F. Grease a loaf pan.",
+      "Mix flour, most of the cheese, garlic, parsley and chives in a bowl.",
+      "Whisk together melted butter, egg and milk. Pour into dry ingredients and mix until just combined — do not overmix.",
+      "Pour into the loaf pan. Top with remaining cheese.",
+      "Bake for 25-30 minutes until golden and a skewer comes out clean. Cool slightly before slicing."
+    ]
+  },
+  {
+    id: "rte-015", name: "Chicken Shawarma", mealTag: "Dinner", cuisine: "Mediterranean", difficulty: "Easy", prepTime: 10, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 800, unit: "g" },
+      { id: "i2", name: "Greek yogurt", qty: 0.5, unit: "cup" },
+      { id: "i3", name: "olive oil", qty: 2, unit: "tbsp" },
+      { id: "i4", name: "lemon juice", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "cumin", qty: 2, unit: "tsp" },
+      { id: "i6", name: "coriander (ground)", qty: 2, unit: "tsp" },
+      { id: "i7", name: "paprika", qty: 2, unit: "tsp" },
+      { id: "i8", name: "turmeric", qty: 0.5, unit: "tsp" },
+      { id: "i9", name: "cinnamon", qty: 0.25, unit: "tsp" },
+      { id: "i10", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i11", name: "flatbread or pita", qty: 4, unit: "piece" },
+    ],
+    steps: [
+      "Mix yogurt, olive oil, lemon juice, cumin, coriander, paprika, turmeric, cinnamon, garlic, salt and pepper.",
+      "Coat chicken and marinate for at least 2 hours, ideally overnight.",
+      "Cook chicken on a hot grill or skillet over medium-high heat, 5-6 minutes per side, until charred and cooked through.",
+      "Rest briefly, then slice into strips.",
+      "Serve in flatbread with lettuce, pickled onions, tomato and garlic sauce or tahini."
+    ]
+  },
+  {
+    id: "rte-016", name: "Baked Chicken & Rice", mealTag: "Dinner", cuisine: "Other", difficulty: "Easy", prepTime: 10, cookTime: 55, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, bone-in skin-on", qty: 1, unit: "kg" },
+      { id: "i2", name: "long grain rice", qty: 1.5, unit: "cup" },
+      { id: "i3", name: "chicken broth", qty: 2.5, unit: "cup" },
+      { id: "i4", name: "onion, diced", qty: 1, unit: "piece" },
+      { id: "i5", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i6", name: "dried thyme", qty: 1, unit: "tsp" },
+      { id: "i7", name: "smoked paprika", qty: 1, unit: "tsp" },
+      { id: "i8", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i9", name: "butter", qty: 1, unit: "tbsp" },
+    ],
+    steps: [
+      "Preheat oven to 180°C/350°F. Season chicken with paprika, thyme, salt and pepper.",
+      "Heat oil and butter in an oven-proof pan. Sear chicken skin-side down until golden, about 4 minutes. Remove.",
+      "Sauté onion and garlic for 2 minutes. Add rice and stir to coat. Pour in broth and stir.",
+      "Place chicken on top of the rice, skin-side up. Cover tightly with foil.",
+      "Bake for 35 minutes covered, then remove foil and bake another 10-15 minutes until chicken skin is crispy and rice has absorbed the liquid."
+    ]
+  },
+  {
+    id: "rte-017", name: "Bolognese Sauce", mealTag: "Meal Prep", cuisine: "Italian", difficulty: "Easy", prepTime: 10, cookTime: 60, servings: 6,
+    ingredients: [
+      { id: "i1", name: "beef mince", qty: 500, unit: "g" },
+      { id: "i2", name: "Italian sausages (meat squeezed out)", qty: 200, unit: "g" },
+      { id: "i3", name: "onion, finely diced", qty: 1, unit: "piece" },
+      { id: "i4", name: "carrot, finely diced", qty: 1, unit: "piece" },
+      { id: "i5", name: "celery stalk, finely diced", qty: 1, unit: "piece" },
+      { id: "i6", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i7", name: "crushed tomatoes (canned)", qty: 800, unit: "g" },
+      { id: "i8", name: "tomato paste", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "red wine", qty: 0.5, unit: "cup" },
+      { id: "i10", name: "dried oregano", qty: 1, unit: "tsp" },
+      { id: "i11", name: "olive oil", qty: 1.5, unit: "tbsp" },
+      { id: "i12", name: "spaghetti or pasta of choice", qty: 500, unit: "g" },
+      { id: "i13", name: "parmesan cheese, grated", qty: 0.5, unit: "cup" },
+    ],
+    steps: [
+      "Heat olive oil in a large pot over high heat. Cook mince and sausage meat, breaking it up, until well browned. Remove.",
+      "Add onion, carrot, celery and garlic. Cook 5 minutes until softened.",
+      "Return meat to the pot. Add wine and let it simmer for 2 minutes.",
+      "Add crushed tomatoes, tomato paste and oregano. Stir, bring to a simmer, then reduce heat to low. Cook for 45-60 minutes, stirring occasionally.",
+      "Season with salt and pepper. Serve over cooked pasta with parmesan."
+    ]
+  },
+  {
+    id: "rte-018", name: "Chicken Fried Rice", mealTag: "Meal Prep", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "day-old cooked rice", qty: 4, unit: "cup" },
+      { id: "i2", name: "chicken breast, diced small", qty: 250, unit: "g" },
+      { id: "i3", name: "eggs", qty: 2, unit: "piece" },
+      { id: "i4", name: "soy sauce", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "sesame oil", qty: 1, unit: "tsp" },
+      { id: "i6", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i7", name: "frozen peas and corn", qty: 1, unit: "cup" },
+      { id: "i8", name: "green onions, sliced", qty: 3, unit: "piece" },
+      { id: "i9", name: "peanut oil", qty: 2, unit: "tbsp" },
+    ],
+    steps: [
+      "Heat half the oil in a wok over high heat. Cook chicken until golden, about 3 minutes. Remove.",
+      "Add remaining oil. Scramble eggs, breaking into small pieces. Push to one side.",
+      "Add garlic, peas and corn. Stir fry 1 minute.",
+      "Add rice and break up any clumps. Stir fry for 2 minutes until heated through.",
+      "Add soy sauce, sesame oil, and return chicken. Toss well. Serve topped with green onions."
+    ]
+  },
+  {
+    id: "rte-019", name: "Sticky Chinese Pork Belly", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 60, servings: 4,
+    ingredients: [
+      { id: "i1", name: "pork belly, cut into chunks", qty: 800, unit: "g" },
+      { id: "i2", name: "soy sauce", qty: 3, unit: "tbsp" },
+      { id: "i3", name: "Chinese cooking wine", qty: 2, unit: "tbsp" },
+      { id: "i4", name: "honey", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "brown sugar", qty: 1, unit: "tbsp" },
+      { id: "i6", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i7", name: "ginger, sliced", qty: 3, unit: "slice" },
+      { id: "i8", name: "star anise", qty: 2, unit: "piece" },
+      { id: "i9", name: "green onions, sliced", qty: 3, unit: "piece" },
+    ],
+    steps: [
+      "Blanch pork belly in boiling water for 5 minutes. Drain and pat dry.",
+      "Heat a wok or pot over high heat. Add pork and sear until golden on all sides.",
+      "Add garlic, ginger and star anise, stir 30 seconds. Add soy sauce, cooking wine, sugar, honey and enough water to just cover.",
+      "Bring to a boil, then reduce heat and simmer covered for 45-50 minutes until pork is very tender.",
+      "Remove lid, increase heat and reduce sauce until thick and sticky. Serve over rice with green onions."
+    ]
+  },
+  {
+    id: "rte-020", name: "Chicken Pineapple Fried Rice", mealTag: "Meal Prep", cuisine: "Thai", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "day-old cooked jasmine rice", qty: 4, unit: "cup" },
+      { id: "i2", name: "pineapple, diced", qty: 1, unit: "cup" },
+      { id: "i3", name: "chicken thigh fillets, diced", qty: 300, unit: "g" },
+      { id: "i4", name: "egg", qty: 1, unit: "piece" },
+      { id: "i5", name: "soy sauce", qty: 2, unit: "tbsp" },
+      { id: "i6", name: "curry powder", qty: 1, unit: "tsp" },
+      { id: "i7", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i8", name: "green onions, sliced", qty: 3, unit: "piece" },
+      { id: "i9", name: "cashews", qty: 0.25, unit: "cup" },
+      { id: "i10", name: "peanut oil", qty: 2, unit: "tbsp" },
+    ],
+    steps: [
+      "Heat half the oil in a wok over high heat. Cook chicken until golden, about 3 minutes. Remove.",
+      "Add remaining oil. Scramble the egg in the wok. Add garlic, cook 30 seconds.",
+      "Add rice, breaking up clumps. Stir fry 2 minutes. Add curry powder and toss.",
+      "Add pineapple and soy sauce. Return chicken, toss everything together.",
+      "Serve topped with cashews and green onions."
+    ]
+  },
+  {
+    id: "rte-021", name: "Spaghetti Carbonara", mealTag: "Dinner", cuisine: "Italian", difficulty: "Medium", prepTime: 5, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "spaghetti", qty: 400, unit: "g" },
+      { id: "i2", name: "guanciale or bacon, diced", qty: 200, unit: "g" },
+      { id: "i3", name: "egg yolks", qty: 4, unit: "piece" },
+      { id: "i4", name: "whole eggs", qty: 2, unit: "piece" },
+      { id: "i5", name: "parmesan cheese, finely grated", qty: 1, unit: "cup" },
+      { id: "i6", name: "black pepper", qty: 1, unit: "tsp" },
+    ],
+    steps: [
+      "Cook spaghetti in a large pot of well-salted boiling water until al dente. Before draining, scoop out 1 cup of starchy pasta cooking water.",
+      "While pasta cooks, sauté guanciale or bacon in a large skillet over medium heat until golden and crispy. Remove from heat.",
+      "In a bowl, whisk together egg yolks, whole eggs, most of the parmesan and plenty of black pepper.",
+      "Add hot drained pasta to the skillet with the guanciale. Toss. Pour the egg mixture over the pasta, tossing vigorously. Add splashes of pasta water to create a silky, creamy sauce.",
+      "Serve immediately topped with remaining parmesan and extra black pepper."
+    ]
+  },
+  {
+    id: "rte-022", name: "Creamy Lemon Chicken", mealTag: "Dinner", cuisine: "Italian", difficulty: "Easy", prepTime: 5, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken breast", qty: 600, unit: "g" },
+      { id: "i2", name: "flour", qty: 0.25, unit: "cup" },
+      { id: "i3", name: "butter", qty: 2, unit: "tbsp" },
+      { id: "i4", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i5", name: "chicken broth", qty: 0.75, unit: "cup" },
+      { id: "i6", name: "heavy cream", qty: 0.5, unit: "cup" },
+      { id: "i7", name: "lemon juice", qty: 3, unit: "tbsp" },
+      { id: "i8", name: "parmesan cheese, grated", qty: 0.33, unit: "cup" },
+      { id: "i9", name: "fresh parsley, chopped", qty: 2, unit: "tbsp" },
+    ],
+    steps: [
+      "Cut chicken breasts in half horizontally to make thin steaks. Season and dust with flour.",
+      "Melt butter in a skillet over high heat. Cook chicken 2-3 minutes per side until golden. Remove and rest.",
+      "In the same skillet, cook garlic for 30 seconds. Add broth and lemon juice, scraping up brown bits. Simmer for 2 minutes.",
+      "Add cream and parmesan, stir until sauce thickens slightly, about 2 minutes.",
+      "Return chicken to the pan briefly to coat. Serve with parsley over pasta or mashed potato."
+    ]
+  },
+  {
+    id: "rte-023", name: "Chicken Enchiladas", mealTag: "Dinner", cuisine: "Mexican", difficulty: "Medium", prepTime: 20, cookTime: 25, servings: 6,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 600, unit: "g" },
+      { id: "i2", name: "flour tortillas (large)", qty: 8, unit: "piece" },
+      { id: "i3", name: "tomato passata", qty: 500, unit: "ml" },
+      { id: "i4", name: "chicken broth", qty: 0.5, unit: "cup" },
+      { id: "i5", name: "refried beans", qty: 400, unit: "g" },
+      { id: "i6", name: "corn kernels", qty: 1, unit: "cup" },
+      { id: "i7", name: "onion, diced", qty: 1, unit: "piece" },
+      { id: "i8", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i9", name: "cumin", qty: 2, unit: "tsp" },
+      { id: "i10", name: "chili powder", qty: 1, unit: "tbsp" },
+      { id: "i11", name: "paprika", qty: 1, unit: "tsp" },
+      { id: "i12", name: "cheddar cheese, grated", qty: 2, unit: "cup" },
+      { id: "i13", name: "olive oil", qty: 2, unit: "tbsp" },
+    ],
+    steps: [
+      "Make enchilada sauce: sauté garlic in 1 tbsp oil, add passata, broth, half the cumin, half the chili powder and paprika. Simmer 5 minutes until thickened.",
+      "Season and cook chicken in remaining oil over high heat until done. Rest, then dice.",
+      "Mix chicken, refried beans, corn, sautéed onion, remaining spices and half the cheese for the filling.",
+      "Spread some sauce in a baking dish. Fill each tortilla with the mixture, roll up and place seam-side down. Pour over remaining sauce, top with remaining cheese.",
+      "Bake at 180°C/350°F for 20-25 minutes until bubbly and golden."
+    ]
+  },
+  {
+    id: "rte-024", name: "Creamy Chicken Alfredo Pasta", mealTag: "Dinner", cuisine: "Italian", difficulty: "Easy", prepTime: 10, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "fettuccine pasta", qty: 400, unit: "g" },
+      { id: "i2", name: "chicken breast", qty: 500, unit: "g" },
+      { id: "i3", name: "bacon rashers, chopped", qty: 4, unit: "piece" },
+      { id: "i4", name: "butter", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i6", name: "white wine", qty: 0.33, unit: "cup" },
+      { id: "i7", name: "heavy cream", qty: 1, unit: "cup" },
+      { id: "i8", name: "parmesan cheese, grated", qty: 0.75, unit: "cup" },
+      { id: "i9", name: "baby spinach", qty: 2, unit: "cup" },
+      { id: "i10", name: "sun-dried tomatoes, sliced", qty: 0.33, unit: "cup" },
+    ],
+    steps: [
+      "Cook pasta in salted water until al dente minus 1 minute. Reserve a mug of pasta water, then drain.",
+      "Season chicken and cook in half the butter over high heat, 2 minutes per side until golden. Rest then shred with two forks.",
+      "In the same skillet, cook bacon until crispy. Add remaining butter and garlic, cook 30 seconds. Add wine and simmer 1 minute.",
+      "Add cream, parmesan, sun-dried tomatoes and spinach. Stir until spinach wilts and sauce thickens. Add pasta, chicken and a splash of pasta water. Toss.",
+      "Serve immediately with extra parmesan and black pepper."
+    ]
+  },
+  {
+    id: "rte-025", name: "Chicken Laksa", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless, sliced", qty: 500, unit: "g" },
+      { id: "i2", name: "laksa paste", qty: 150, unit: "g" },
+      { id: "i3", name: "coconut milk (can)", qty: 400, unit: "ml" },
+      { id: "i4", name: "chicken stock", qty: 3, unit: "cup" },
+      { id: "i5", name: "rice vermicelli noodles", qty: 200, unit: "g" },
+      { id: "i6", name: "tofu puffs, halved", qty: 8, unit: "piece" },
+      { id: "i7", name: "bok choy", qty: 1, unit: "bunch" },
+      { id: "i8", name: "lime juice", qty: 1, unit: "tbsp" },
+      { id: "i9", name: "bean sprouts", qty: 1, unit: "cup" },
+      { id: "i10", name: "fresh cilantro", qty: 0.25, unit: "cup" },
+      { id: "i11", name: "vegetable oil", qty: 1, unit: "tbsp" },
+    ],
+    steps: [
+      "Cook rice vermicelli per packet directions. Drain and set aside.",
+      "Heat oil in a large pot over medium-high heat. Add laksa paste and fry for 1 minute until fragrant.",
+      "Add coconut milk and chicken stock. Bring to a simmer.",
+      "Add chicken, tofu puffs and bok choy. Cook for 5-6 minutes until chicken is cooked through. Stir in lime juice.",
+      "Divide noodles among bowls, ladle over the laksa broth. Top with bean sprouts, cilantro and extra lime wedges."
+    ]
+  },
+  {
+    id: "rte-026", name: "Chicken Pad Thai", mealTag: "Dinner", cuisine: "Thai", difficulty: "Medium", prepTime: 15, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "flat rice noodles (pad thai noodles)", qty: 250, unit: "g" },
+      { id: "i2", name: "chicken thigh fillets, sliced", qty: 400, unit: "g" },
+      { id: "i3", name: "eggs", qty: 2, unit: "piece" },
+      { id: "i4", name: "bean sprouts", qty: 1.5, unit: "cup" },
+      { id: "i5", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i6", name: "fish sauce", qty: 3, unit: "tbsp" },
+      { id: "i7", name: "tamarind paste", qty: 3, unit: "tbsp" },
+      { id: "i8", name: "brown sugar", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "oyster sauce", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "peanut oil", qty: 2, unit: "tbsp" },
+      { id: "i11", name: "green onions, sliced", qty: 3, unit: "piece" },
+      { id: "i12", name: "roasted peanuts, crushed", qty: 0.25, unit: "cup" },
+      { id: "i13", name: "lime wedges", qty: 4, unit: "piece" },
+    ],
+    steps: [
+      "Soak rice noodles in boiling water per packet directions until pliable but still firm. Drain.",
+      "Mix fish sauce, tamarind paste, brown sugar and oyster sauce for the pad thai sauce.",
+      "Heat oil in a wok over high heat. Cook chicken until golden, about 3 minutes. Push to one side, crack in eggs and scramble.",
+      "Add garlic, noodles and sauce. Toss everything together for 1-2 minutes until noodles are coated and heated through.",
+      "Add bean sprouts and green onions, toss briefly. Serve topped with crushed peanuts and lime wedges."
+    ]
+  },
+  {
+    id: "rte-027", name: "One Pot Greek Chicken & Lemon Rice", mealTag: "Meal Prep", cuisine: "Mediterranean", difficulty: "Easy", prepTime: 10, cookTime: 45, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, bone-in skin-on", qty: 1, unit: "kg" },
+      { id: "i2", name: "long grain rice", qty: 1.5, unit: "cup" },
+      { id: "i3", name: "chicken broth", qty: 2.5, unit: "cup" },
+      { id: "i4", name: "lemon juice", qty: 3, unit: "tbsp" },
+      { id: "i5", name: "lemon zest", qty: 1, unit: "tbsp" },
+      { id: "i6", name: "garlic cloves, minced", qty: 4, unit: "piece" },
+      { id: "i7", name: "dried oregano", qty: 2, unit: "tsp" },
+      { id: "i8", name: "olive oil", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "onion, diced", qty: 1, unit: "piece" },
+    ],
+    steps: [
+      "Preheat oven to 180°C/350°F. Season chicken with oregano, salt, pepper and half the lemon juice.",
+      "Heat oil in an oven-proof pot. Sear chicken skin-side down until golden, about 4 minutes. Remove.",
+      "Sauté onion and garlic for 2 minutes. Add rice, stir to coat. Add broth, remaining lemon juice and zest. Stir.",
+      "Place chicken on top skin-side up. Cover and bake for 35 minutes.",
+      "Remove cover, bake 10 more minutes until chicken skin is crispy and rice is fluffy. Serve with a squeeze of extra lemon."
+    ]
+  },
+  {
+    id: "rte-028", name: "Chicken Tacos", mealTag: "Dinner", cuisine: "Mexican", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 600, unit: "g" },
+      { id: "i2", name: "small flour or corn tortillas", qty: 8, unit: "piece" },
+      { id: "i3", name: "cumin", qty: 1.5, unit: "tsp" },
+      { id: "i4", name: "smoked paprika", qty: 1, unit: "tsp" },
+      { id: "i5", name: "chili powder", qty: 0.5, unit: "tsp" },
+      { id: "i6", name: "garlic powder", qty: 0.5, unit: "tsp" },
+      { id: "i7", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i8", name: "lime juice", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "avocado, sliced", qty: 1, unit: "piece" },
+      { id: "i10", name: "red cabbage, shredded", qty: 1, unit: "cup" },
+      { id: "i11", name: "sour cream", qty: 0.25, unit: "cup" },
+      { id: "i12", name: "fresh cilantro", qty: 0.25, unit: "cup" },
+    ],
+    steps: [
+      "Mix cumin, paprika, chili powder, garlic powder and salt. Rub over chicken with olive oil.",
+      "Cook chicken in a hot skillet or grill for 5-6 minutes per side until cooked through and nicely charred.",
+      "Rest briefly, then slice into strips. Squeeze lime juice over the top.",
+      "Warm tortillas. Fill with chicken, avocado, shredded cabbage, sour cream and cilantro.",
+      "Serve with extra lime wedges and hot sauce."
+    ]
+  },
+  {
+    id: "rte-029", name: "Chow Mein", mealTag: "Meal Prep", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "egg noodles (chow mein or hokkien)", qty: 400, unit: "g" },
+      { id: "i2", name: "chicken breast, sliced thinly", qty: 300, unit: "g" },
+      { id: "i3", name: "cabbage, shredded", qty: 2, unit: "cup" },
+      { id: "i4", name: "carrot, julienned", qty: 1, unit: "piece" },
+      { id: "i5", name: "celery stalk, sliced", qty: 1, unit: "piece" },
+      { id: "i6", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i7", name: "soy sauce", qty: 3, unit: "tbsp" },
+      { id: "i8", name: "oyster sauce", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "sesame oil", qty: 1, unit: "tsp" },
+      { id: "i10", name: "peanut oil", qty: 2, unit: "tbsp" },
+      { id: "i11", name: "green onions, sliced", qty: 3, unit: "piece" },
+    ],
+    steps: [
+      "Cook noodles per packet directions. Drain.",
+      "Heat half the oil in a wok over high heat. Cook chicken until golden, 2-3 minutes. Remove.",
+      "Add remaining oil. Stir fry garlic, cabbage, carrot and celery for 2 minutes until just tender.",
+      "Return chicken. Add noodles, soy sauce, oyster sauce and sesame oil. Toss vigorously for 1-2 minutes until everything is well coated and hot.",
+      "Serve topped with green onions."
+    ]
+  },
+  {
+    id: "rte-030", name: "Chicken Burrito Bowls", mealTag: "Meal Prep", cuisine: "Mexican", difficulty: "Easy", prepTime: 15, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 600, unit: "g" },
+      { id: "i2", name: "rice", qty: 1.5, unit: "cup" },
+      { id: "i3", name: "black beans (canned, drained)", qty: 400, unit: "g" },
+      { id: "i4", name: "corn kernels", qty: 1, unit: "cup" },
+      { id: "i5", name: "cumin", qty: 1.5, unit: "tsp" },
+      { id: "i6", name: "smoked paprika", qty: 1, unit: "tsp" },
+      { id: "i7", name: "chili powder", qty: 0.5, unit: "tsp" },
+      { id: "i8", name: "lime juice", qty: 2, unit: "tbsp" },
+      { id: "i9", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "avocado, diced", qty: 1, unit: "piece" },
+      { id: "i11", name: "tomato, diced", qty: 2, unit: "piece" },
+      { id: "i12", name: "sour cream", qty: 0.25, unit: "cup" },
+      { id: "i13", name: "cheddar cheese, grated", qty: 0.5, unit: "cup" },
+    ],
+    steps: [
+      "Cook rice per packet directions. Fluff with a fork and stir in half the lime juice.",
+      "Season chicken with cumin, paprika, chili powder and salt. Cook in olive oil over high heat, 5-6 minutes per side. Rest, then slice.",
+      "Warm black beans and corn in a small pan.",
+      "Assemble bowls: rice base, topped with sliced chicken, black beans, corn, diced tomato, avocado, cheese and sour cream.",
+      "Drizzle with remaining lime juice and serve with hot sauce."
+    ]
+  },
+  {
+    id: "rte-031", name: "Crispy Pea Fritters", mealTag: "Snack", cuisine: "Other", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "frozen peas", qty: 2, unit: "cup" },
+      { id: "i2", name: "flour", qty: 0.5, unit: "cup" },
+      { id: "i3", name: "eggs", qty: 2, unit: "piece" },
+      { id: "i4", name: "green onions, sliced", qty: 3, unit: "piece" },
+      { id: "i5", name: "fresh mint, chopped", qty: 2, unit: "tbsp" },
+      { id: "i6", name: "feta cheese, crumbled", qty: 0.5, unit: "cup" },
+      { id: "i7", name: "lemon zest", qty: 1, unit: "tsp" },
+      { id: "i8", name: "olive oil", qty: 3, unit: "tbsp" },
+    ],
+    steps: [
+      "Cook peas in boiling water for 2 minutes, drain. Roughly mash half of them with a fork.",
+      "Mix mashed and whole peas with flour, eggs, green onions, mint, feta and lemon zest. Season with salt and pepper.",
+      "Heat olive oil in a large skillet over medium-high heat.",
+      "Drop spoonfuls of the mixture into the skillet and flatten slightly. Cook 2-3 minutes per side until golden and crispy.",
+      "Serve with yogurt, lemon wedges and a green salad."
+    ]
+  },
+  {
+    id: "rte-032", name: "Korean Beef Bulgogi Rice Bowls", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 15, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "beef sirloin, thinly sliced", qty: 500, unit: "g" },
+      { id: "i2", name: "soy sauce", qty: 3, unit: "tbsp" },
+      { id: "i3", name: "brown sugar", qty: 1.5, unit: "tbsp" },
+      { id: "i4", name: "sesame oil", qty: 1, unit: "tbsp" },
+      { id: "i5", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i6", name: "ginger, grated", qty: 1, unit: "tsp" },
+      { id: "i7", name: "pear or apple, grated", qty: 0.5, unit: "piece" },
+      { id: "i8", name: "peanut oil", qty: 1, unit: "tbsp" },
+      { id: "i9", name: "rice, cooked", qty: 4, unit: "cup" },
+      { id: "i10", name: "green onions, sliced", qty: 3, unit: "piece" },
+      { id: "i11", name: "sesame seeds", qty: 1, unit: "tbsp" },
+      { id: "i12", name: "cucumber, sliced", qty: 1, unit: "piece" },
+    ],
+    steps: [
+      "Mix soy sauce, brown sugar, sesame oil, garlic, ginger and grated pear for the bulgogi marinade.",
+      "Toss beef in the marinade and let sit for at least 15 minutes (up to overnight).",
+      "Heat peanut oil in a skillet over high heat. Cook beef in batches for 1-2 minutes per side until caramelised.",
+      "Serve over rice with sliced cucumber, green onions and sesame seeds.",
+      "Drizzle any remaining pan juices over the top."
+    ]
+  },
+  {
+    id: "rte-033", name: "One Pot Enchilada Rice", mealTag: "Meal Prep", cuisine: "Mexican", difficulty: "Easy", prepTime: 10, cookTime: 25, servings: 6,
+    ingredients: [
+      { id: "i1", name: "chicken breast", qty: 500, unit: "g" },
+      { id: "i2", name: "long grain rice", qty: 1.5, unit: "cup" },
+      { id: "i3", name: "tomato passata", qty: 500, unit: "ml" },
+      { id: "i4", name: "chicken broth", qty: 1.5, unit: "cup" },
+      { id: "i5", name: "onion, diced", qty: 1, unit: "piece" },
+      { id: "i6", name: "bell pepper, diced", qty: 1, unit: "piece" },
+      { id: "i7", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i8", name: "cumin", qty: 2, unit: "tsp" },
+      { id: "i9", name: "chili powder", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "oregano", qty: 1, unit: "tsp" },
+      { id: "i11", name: "cheddar cheese, grated", qty: 1, unit: "cup" },
+      { id: "i12", name: "olive oil", qty: 1, unit: "tbsp" },
+    ],
+    steps: [
+      "Cook chicken in olive oil over high heat until golden on both sides, about 2 minutes per side. Remove.",
+      "Sauté onion, garlic and bell pepper for 2 minutes. Add passata, broth, cumin, chili powder and oregano.",
+      "Bring to a simmer, then add rice. Stir to combine.",
+      "Place chicken on top, cover and cook on medium-low for 20 minutes until rice is cooked and liquid absorbed.",
+      "Top with cheese, cover for 2 minutes to melt. Serve with sour cream and cilantro."
+    ]
+  },
+  {
+    id: "rte-034", name: "Honey Mustard Chicken Drumsticks", mealTag: "Dinner", cuisine: "Other", difficulty: "Easy", prepTime: 5, cookTime: 45, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken drumsticks", qty: 1, unit: "kg" },
+      { id: "i2", name: "Dijon mustard", qty: 3, unit: "tbsp" },
+      { id: "i3", name: "honey", qty: 3, unit: "tbsp" },
+      { id: "i4", name: "soy sauce", qty: 1, unit: "tbsp" },
+      { id: "i5", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i6", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i7", name: "smoked paprika", qty: 1, unit: "tsp" },
+    ],
+    steps: [
+      "Preheat oven to 200°C/390°F. Line a baking tray with baking paper.",
+      "Mix Dijon mustard, honey, soy sauce, garlic, olive oil and paprika for the glaze.",
+      "Toss drumsticks in the glaze until well coated. Place on the baking tray.",
+      "Bake for 40-45 minutes, turning and basting halfway, until caramelised and cooked through.",
+      "Serve with roasted vegetables or a simple salad."
+    ]
+  },
+  {
+    id: "rte-035", name: "Firecracker Beef", mealTag: "Dinner", cuisine: "Asian", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "beef sirloin, thinly sliced", qty: 500, unit: "g" },
+      { id: "i2", name: "soy sauce", qty: 3, unit: "tbsp" },
+      { id: "i3", name: "brown sugar", qty: 2, unit: "tbsp" },
+      { id: "i4", name: "sriracha", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "rice vinegar", qty: 1, unit: "tbsp" },
+      { id: "i6", name: "cornstarch", qty: 2, unit: "tsp" },
+      { id: "i7", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i8", name: "ginger, grated", qty: 1, unit: "tsp" },
+      { id: "i9", name: "peanut oil", qty: 2, unit: "tbsp" },
+      { id: "i10", name: "green onions, sliced", qty: 3, unit: "piece" },
+      { id: "i11", name: "sesame seeds", qty: 1, unit: "tbsp" },
+      { id: "i12", name: "rice, for serving", qty: 3, unit: "cup" },
+    ],
+    steps: [
+      "Mix soy sauce, brown sugar, sriracha, rice vinegar and cornstarch for the firecracker sauce.",
+      "Heat oil in a wok over high heat until smoking. Add beef and stir fry for 1-2 minutes until browned. Remove.",
+      "Add garlic and ginger, stir for 15 seconds. Pour in sauce and let it bubble and thicken for 1 minute.",
+      "Return beef, toss to coat in the sticky sauce.",
+      "Serve over steamed rice, topped with green onions and sesame seeds."
+    ]
+  },
+  {
+    id: "rte-036", name: "Teriyaki Chicken Noodles", mealTag: "Meal Prep", cuisine: "Japanese", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thigh fillets, sliced", qty: 500, unit: "g" },
+      { id: "i2", name: "ramen noodles (dried)", qty: 250, unit: "g" },
+      { id: "i3", name: "soy sauce", qty: 3, unit: "tbsp" },
+      { id: "i4", name: "mirin", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "brown sugar", qty: 1, unit: "tsp" },
+      { id: "i6", name: "sesame oil", qty: 1, unit: "tsp" },
+      { id: "i7", name: "Chinese broccoli or broccolini", qty: 1, unit: "bunch" },
+      { id: "i8", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i9", name: "peanut oil", qty: 1.5, unit: "tbsp" },
+    ],
+    steps: [
+      "Cook noodles per packet directions. Drain.",
+      "Mix soy sauce, mirin, sugar and sesame oil for the teriyaki sauce. Coat chicken in 1 tbsp of the sauce.",
+      "Heat oil in a large skillet over high heat. Cook chicken 3-4 minutes until golden and cooked through. Remove.",
+      "In the same skillet, add garlic and broccoli, cook 1 minute. Add noodles and remaining sauce. Toss for 2 minutes until noodles are caramelised.",
+      "Return chicken to the skillet, toss through and serve immediately."
+    ]
+  },
+  {
+    id: "rte-037", name: "Lamb Shawarma Chickpea Soup", mealTag: "Meal Prep", cuisine: "Mediterranean", difficulty: "Easy", prepTime: 10, cookTime: 25, servings: 5,
+    ingredients: [
+      { id: "i1", name: "lamb mince", qty: 500, unit: "g" },
+      { id: "i2", name: "chickpeas (canned, drained)", qty: 400, unit: "g" },
+      { id: "i3", name: "crushed tomatoes (canned)", qty: 400, unit: "g" },
+      { id: "i4", name: "chicken broth", qty: 3, unit: "cup" },
+      { id: "i5", name: "onion, diced", qty: 1, unit: "piece" },
+      { id: "i6", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i7", name: "carrot, diced", qty: 1, unit: "piece" },
+      { id: "i8", name: "baby spinach", qty: 3, unit: "cup" },
+      { id: "i9", name: "cumin", qty: 2, unit: "tsp" },
+      { id: "i10", name: "coriander (ground)", qty: 1.5, unit: "tsp" },
+      { id: "i11", name: "paprika", qty: 1.5, unit: "tsp" },
+      { id: "i12", name: "turmeric", qty: 0.5, unit: "tsp" },
+      { id: "i13", name: "olive oil", qty: 1, unit: "tbsp" },
+    ],
+    steps: [
+      "Heat oil in a large pot over high heat. Cook lamb mince, breaking it up, until browned. Remove.",
+      "In the same pot, sauté onion, garlic and carrot for 3 minutes. Add cumin, coriander, paprika and turmeric, stir 30 seconds.",
+      "Return lamb. Add crushed tomatoes, broth and chickpeas. Bring to a simmer and cook for 15-20 minutes.",
+      "Stir in spinach and let it wilt, about 1 minute. Season with salt and pepper.",
+      "Serve with a dollop of yogurt and crusty bread."
+    ]
+  },
+  {
+    id: "rte-038", name: "Creamy Chicken & Bacon Pasta", mealTag: "Dinner", cuisine: "Italian", difficulty: "Easy", prepTime: 10, cookTime: 15, servings: 4,
+    ingredients: [
+      { id: "i1", name: "penne pasta", qty: 400, unit: "g" },
+      { id: "i2", name: "chicken breast, sliced", qty: 500, unit: "g" },
+      { id: "i3", name: "bacon rashers, chopped", qty: 4, unit: "piece" },
+      { id: "i4", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i5", name: "heavy cream", qty: 1, unit: "cup" },
+      { id: "i6", name: "parmesan cheese, grated", qty: 0.5, unit: "cup" },
+      { id: "i7", name: "baby spinach", qty: 2, unit: "cup" },
+      { id: "i8", name: "olive oil", qty: 1, unit: "tbsp" },
+    ],
+    steps: [
+      "Cook pasta in salted boiling water until al dente. Reserve a cup of pasta water, then drain.",
+      "Cook bacon in a large skillet until crispy. Remove. In the same pan, cook chicken in olive oil over high heat until golden. Remove.",
+      "Add garlic, cook 30 seconds. Pour in cream and simmer for 2-3 minutes until slightly thickened.",
+      "Stir in parmesan, spinach, cooked pasta, chicken and bacon. Toss, adding splashes of pasta water for a silky sauce.",
+      "Serve with extra parmesan and black pepper."
+    ]
+  },
+  {
+    id: "rte-039", name: "Slow Cooker Pulled Pork", mealTag: "Meal Prep", cuisine: "American", difficulty: "Easy", prepTime: 10, cookTime: 240, servings: 8,
+    ingredients: [
+      { id: "i1", name: "pork shoulder (bone-in)", qty: 2, unit: "kg" },
+      { id: "i2", name: "brown sugar", qty: 2, unit: "tbsp" },
+      { id: "i3", name: "smoked paprika", qty: 1, unit: "tbsp" },
+      { id: "i4", name: "cumin", qty: 1, unit: "tsp" },
+      { id: "i5", name: "garlic powder", qty: 1, unit: "tsp" },
+      { id: "i6", name: "onion powder", qty: 1, unit: "tsp" },
+      { id: "i7", name: "cayenne pepper", qty: 0.25, unit: "tsp" },
+      { id: "i8", name: "apple cider vinegar", qty: 0.25, unit: "cup" },
+      { id: "i9", name: "BBQ sauce", qty: 0.5, unit: "cup" },
+      { id: "i10", name: "burger buns", qty: 8, unit: "piece" },
+      { id: "i11", name: "coleslaw (prepared or homemade)", qty: 2, unit: "cup" },
+    ],
+    steps: [
+      "Mix brown sugar, paprika, cumin, garlic powder, onion powder, cayenne and salt into a rub. Rub all over the pork.",
+      "Place pork in slow cooker. Pour vinegar around the sides. Cook on low for 8 hours or high for 4 hours.",
+      "Remove pork, discard bone and fat. Shred meat with two forks.",
+      "Toss shredded pork with BBQ sauce and a few spoonfuls of the cooking liquid for juiciness.",
+      "Serve on buns topped with coleslaw."
+    ]
+  },
+  {
+    id: "rte-040", name: "Chicken Noodle Soup", mealTag: "Meal Prep", cuisine: "Other", difficulty: "Easy", prepTime: 10, cookTime: 25, servings: 6,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless skinless", qty: 500, unit: "g" },
+      { id: "i2", name: "egg noodles or pasta", qty: 200, unit: "g" },
+      { id: "i3", name: "chicken broth", qty: 6, unit: "cup" },
+      { id: "i4", name: "carrot, diced", qty: 2, unit: "piece" },
+      { id: "i5", name: "celery stalks, diced", qty: 2, unit: "piece" },
+      { id: "i6", name: "onion, diced", qty: 1, unit: "piece" },
+      { id: "i7", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i8", name: "fresh parsley, chopped", qty: 3, unit: "tbsp" },
+      { id: "i9", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "bay leaf", qty: 1, unit: "piece" },
+    ],
+    steps: [
+      "Heat oil in a large pot. Sauté onion, carrot, celery and garlic for 3-4 minutes until softened.",
+      "Add chicken broth, bay leaf and whole chicken thighs. Bring to a boil, then simmer for 15 minutes until chicken is cooked.",
+      "Remove chicken, shred with two forks, and return to the pot.",
+      "Add noodles and cook for the time on the packet until tender.",
+      "Remove bay leaf, stir in parsley and season with salt and pepper. Serve hot."
+    ]
+  },
+  {
+    id: "rte-041", name: "Lamb Kofta", mealTag: "Dinner", cuisine: "Mediterranean", difficulty: "Easy", prepTime: 15, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "lamb mince", qty: 500, unit: "g" },
+      { id: "i2", name: "onion, grated", qty: 0.5, unit: "piece" },
+      { id: "i3", name: "garlic cloves, minced", qty: 2, unit: "piece" },
+      { id: "i4", name: "cumin", qty: 1.5, unit: "tsp" },
+      { id: "i5", name: "coriander (ground)", qty: 1, unit: "tsp" },
+      { id: "i6", name: "paprika", qty: 1, unit: "tsp" },
+      { id: "i7", name: "cinnamon", qty: 0.25, unit: "tsp" },
+      { id: "i8", name: "fresh parsley, chopped", qty: 3, unit: "tbsp" },
+      { id: "i9", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "flatbread or pita", qty: 4, unit: "piece" },
+      { id: "i11", name: "Greek yogurt", qty: 0.5, unit: "cup" },
+    ],
+    steps: [
+      "Mix lamb mince, grated onion, garlic, cumin, coriander, paprika, cinnamon, parsley, salt and pepper in a bowl.",
+      "Shape into small oval logs around skewers or as free-form patties.",
+      "Brush with oil. Cook on a hot grill or skillet for 3-4 minutes per side until cooked through with nice char.",
+      "Serve in warm flatbread with yogurt, sliced tomato, red onion and fresh herbs.",
+      "A squeeze of lemon juice over the top finishes it perfectly."
+    ]
+  },
+  {
+    id: "rte-042", name: "Chicken Tikka Masala", mealTag: "Dinner", cuisine: "Indian", difficulty: "Medium", prepTime: 20, cookTime: 25, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thighs, boneless, cubed", qty: 750, unit: "g" },
+      { id: "i2", name: "Greek yogurt", qty: 0.5, unit: "cup" },
+      { id: "i3", name: "garam masala", qty: 1, unit: "tbsp" },
+      { id: "i4", name: "turmeric", qty: 0.5, unit: "tsp" },
+      { id: "i5", name: "cumin", qty: 1, unit: "tsp" },
+      { id: "i6", name: "chili powder", qty: 0.5, unit: "tsp" },
+      { id: "i7", name: "onion, finely diced", qty: 1, unit: "piece" },
+      { id: "i8", name: "garlic cloves, minced", qty: 4, unit: "piece" },
+      { id: "i9", name: "ginger, grated", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "crushed tomatoes (canned)", qty: 400, unit: "g" },
+      { id: "i11", name: "heavy cream", qty: 0.75, unit: "cup" },
+      { id: "i12", name: "butter", qty: 2, unit: "tbsp" },
+      { id: "i13", name: "basmati rice, for serving", qty: 2, unit: "cup" },
+    ],
+    steps: [
+      "Marinate chicken in yogurt, half the garam masala, turmeric, cumin and chili powder for at least 30 minutes.",
+      "Cook marinated chicken in a hot skillet or under a grill until charred on the outside. Set aside.",
+      "Melt butter, sauté onion until golden. Add garlic, ginger and remaining garam masala, cook 1 minute.",
+      "Add crushed tomatoes and simmer 10 minutes. Stir in cream and cooked chicken. Simmer 5 more minutes.",
+      "Season with salt. Serve over basmati rice with naan bread and fresh cilantro."
+    ]
+  },
+  {
+    id: "rte-043", name: "Beef Tacos", mealTag: "Dinner", cuisine: "Mexican", difficulty: "Easy", prepTime: 10, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "beef mince", qty: 500, unit: "g" },
+      { id: "i2", name: "small tortillas", qty: 8, unit: "piece" },
+      { id: "i3", name: "cumin", qty: 1.5, unit: "tsp" },
+      { id: "i4", name: "smoked paprika", qty: 1, unit: "tsp" },
+      { id: "i5", name: "chili powder", qty: 1, unit: "tsp" },
+      { id: "i6", name: "garlic powder", qty: 0.5, unit: "tsp" },
+      { id: "i7", name: "onion powder", qty: 0.5, unit: "tsp" },
+      { id: "i8", name: "tomato paste", qty: 1, unit: "tbsp" },
+      { id: "i9", name: "olive oil", qty: 1, unit: "tbsp" },
+      { id: "i10", name: "cheddar cheese, grated", qty: 1, unit: "cup" },
+      { id: "i11", name: "lettuce, shredded", qty: 1, unit: "cup" },
+      { id: "i12", name: "tomato, diced", qty: 2, unit: "piece" },
+      { id: "i13", name: "sour cream", qty: 0.25, unit: "cup" },
+    ],
+    steps: [
+      "Heat oil in a skillet over high heat. Cook beef mince, breaking it up, until well browned.",
+      "Add cumin, paprika, chili powder, garlic powder, onion powder and tomato paste. Stir and cook 2 minutes.",
+      "Add a splash of water, stir and simmer 2-3 minutes until a thick saucy consistency.",
+      "Warm tortillas. Fill with seasoned beef, cheese, lettuce, tomato and sour cream.",
+      "Serve with lime wedges and hot sauce."
+    ]
+  },
+  {
+    id: "rte-044", name: "Kung Pao Chicken", mealTag: "Dinner", cuisine: "Asian", difficulty: "Medium", prepTime: 15, cookTime: 10, servings: 4,
+    ingredients: [
+      { id: "i1", name: "chicken thigh fillets, diced", qty: 600, unit: "g" },
+      { id: "i2", name: "roasted peanuts", qty: 0.33, unit: "cup" },
+      { id: "i3", name: "dried red chillies", qty: 8, unit: "piece" },
+      { id: "i4", name: "soy sauce", qty: 2, unit: "tbsp" },
+      { id: "i5", name: "Chinese black vinegar", qty: 1.5, unit: "tbsp" },
+      { id: "i6", name: "brown sugar", qty: 1, unit: "tbsp" },
+      { id: "i7", name: "Chinese cooking wine", qty: 1, unit: "tbsp" },
+      { id: "i8", name: "cornstarch", qty: 2, unit: "tsp" },
+      { id: "i9", name: "sesame oil", qty: 1, unit: "tsp" },
+      { id: "i10", name: "garlic cloves, minced", qty: 3, unit: "piece" },
+      { id: "i11", name: "ginger, minced", qty: 1, unit: "tsp" },
+      { id: "i12", name: "green onions, sliced", qty: 3, unit: "piece" },
+      { id: "i13", name: "peanut oil", qty: 2, unit: "tbsp" },
+    ],
+    steps: [
+      "Mix soy sauce, black vinegar, sugar, cooking wine, cornstarch, sesame oil and 2 tbsp water for the sauce.",
+      "Heat oil in a wok over high heat. Add dried chillies and stir for 30 seconds until fragrant (don't burn).",
+      "Add chicken and stir fry 3-4 minutes until golden and cooked through.",
+      "Add garlic and ginger, stir 30 seconds. Pour in sauce, toss until it thickens and coats the chicken.",
+      "Toss in peanuts and green onions. Serve immediately over steamed rice."
+    ]
+  },
+  {
+    id: "rte-045", name: "Roast Pumpkin & Feta Salad", mealTag: "Dinner", cuisine: "Mediterranean", difficulty: "Easy", prepTime: 10, cookTime: 30, servings: 4,
+    ingredients: [
+      { id: "i1", name: "pumpkin, peeled and cubed", qty: 800, unit: "g" },
+      { id: "i2", name: "feta cheese, crumbled", qty: 150, unit: "g" },
+      { id: "i3", name: "baby spinach or rocket", qty: 4, unit: "cup" },
+      { id: "i4", name: "pecans or walnuts", qty: 0.33, unit: "cup" },
+      { id: "i5", name: "dried cranberries", qty: 0.25, unit: "cup" },
+      { id: "i6", name: "red onion, thinly sliced", qty: 0.5, unit: "piece" },
+      { id: "i7", name: "olive oil", qty: 3, unit: "tbsp" },
+      { id: "i8", name: "maple syrup", qty: 1, unit: "tbsp" },
+      { id: "i9", name: "balsamic vinegar", qty: 1.5, unit: "tbsp" },
+    ],
+    steps: [
+      "Preheat oven to 220°C/430°F. Toss pumpkin with 1 tbsp oil, maple syrup, salt and pepper. Roast 25-30 minutes until golden and tender.",
+      "Toast pecans in a dry pan for 2-3 minutes. Roughly chop.",
+      "Whisk remaining olive oil with balsamic vinegar, salt and pepper for the dressing.",
+      "Arrange spinach on a platter. Top with roasted pumpkin, feta, pecans, cranberries and red onion.",
+      "Drizzle with dressing and serve as a side or light meal."
+    ]
+  },
+  {
+    id: "rte-046", name: "BBQ Night — Build Your Own", mealTag: "Dinner", cuisine: "Other", difficulty: "Easy", prepTime: 15, cookTime: 20, servings: 5,
+    bbqBuilder: true,
+    bbqOptions: {
+      meats: [
+        { id: "m1", name: "Beef steaks (sirloin or rump)", qty: 200, unit: "g", perPerson: true },
+        { id: "m2", name: "Sausages (beef or pork)", qty: 2, unit: "piece", perPerson: true },
+        { id: "m3", name: "Chicken thighs (boneless, marinated)", qty: 200, unit: "g", perPerson: true },
+        { id: "m4", name: "Lamb chops or cutlets", qty: 200, unit: "g", perPerson: true },
+        { id: "m5", name: "Kebabs (beef or chicken, cubed and skewered)", qty: 200, unit: "g", perPerson: true },
+      ],
+      sides: [
+        { id: "s1", name: "Mixed salad leaves", qty: 1, unit: "cup", perPerson: true },
+        { id: "s2", name: "Corn on the cob", qty: 1, unit: "piece", perPerson: true },
+        { id: "s3", name: "Potatoes (for baking or potato salad)", qty: 200, unit: "g", perPerson: true },
+        { id: "s4", name: "Zucchini (sliced for grilling)", qty: 0.5, unit: "piece", perPerson: true },
+      ],
+    },
+    ingredients: [],
+    steps: [
+      "Heat the BBQ or grill to medium-high heat. Oil the grill grates.",
+      "Season meats with salt, pepper and olive oil. For chicken, marinate ahead with your favourite spice rub or sauce.",
+      "Grill steaks 3-4 min per side for medium. Sausages 10-12 min turning often. Chicken thighs 5-6 min per side. Lamb chops 3-4 min per side. Kebabs 3-4 min per side.",
+      "For sides: wrap corn in foil with butter and grill 15 min. Slice zucchini, brush with oil and grill 2-3 min per side. Bake potatoes in foil on the grill 40 min (or boil and make potato salad).",
+      "Serve everything on a big platter family-style with bread rolls, sauces and a fresh salad."
+    ]
+  },
+];
+
+// ─── Styles ────────────────────────────────────────────────────
+const fonts = `
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500;600&display=swap');
+`;
+
+const css = `
+${fonts}
+:root {
+  --cream: #FDF6EC;
+  --warm: #F5E6D0;
+  --terracotta: #C4654A;
+  --terracotta-light: #E8856A;
+  --forest: #2D5A3D;
+  --forest-light: #3D7A53;
+  --charcoal: #2C2C2C;
+  --soft-brown: #8B7355;
+  --gold: #D4A853;
+  --card-bg: #FFFBF5;
+  --border: #E8DDD0;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--cream); font-family: 'DM Sans', sans-serif; color: var(--charcoal); }
+h1, h2, h3, h4 { font-family: 'Playfair Display', serif; }
+.app-wrap { min-height: 100vh; display: flex; flex-direction: column; }
+.nav-bar {
+  display: flex; align-items: center; gap: 8px; padding: 16px 20px;
+  background: var(--charcoal); position: sticky; top: 0; z-index: 50;
+}
+.nav-bar h1 { font-size: 20px; color: var(--gold); margin-right: auto; letter-spacing: -0.5px; }
+.nav-btn {
+  padding: 8px 18px; border-radius: 24px; border: none; cursor: pointer;
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+  transition: all 0.2s; background: transparent; color: #aaa;
+}
+.nav-btn:hover { color: #fff; }
+.nav-btn.active { background: var(--terracotta); color: #fff; }
+.main { flex: 1; padding: 20px; max-width: 1100px; margin: 0 auto; width: 100%; }
+
+/* Cards */
+.card {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px; transition: box-shadow 0.2s;
+}
+.card:hover { box-shadow: 0 4px 20px rgba(0,0,0,0.06); }
+
+/* Buttons */
+.btn {
+  padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;
+  font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 500; transition: all 0.15s;
+}
+.btn-primary { background: var(--terracotta); color: #fff; }
+.btn-primary:hover { background: var(--terracotta-light); }
+.btn-secondary { background: var(--forest); color: #fff; }
+.btn-secondary:hover { background: var(--forest-light); }
+.btn-outline { background: transparent; border: 1.5px solid var(--border); color: var(--charcoal); }
+.btn-outline:hover { border-color: var(--terracotta); color: var(--terracotta); }
+.btn-sm { padding: 6px 14px; font-size: 12px; }
+.btn-danger { background: #e74c3c; color: #fff; }
+.btn-danger:hover { background: #c0392b; }
+
+/* Inputs */
+.input, .select, textarea {
+  padding: 10px 14px; border-radius: 8px; border: 1.5px solid var(--border);
+  font-family: 'DM Sans', sans-serif; font-size: 14px; background: #fff;
+  width: 100%; transition: border-color 0.15s; outline: none;
+}
+.input:focus, .select:focus, textarea:focus { border-color: var(--terracotta); }
+textarea { resize: vertical; min-height: 60px; }
+
+/* Tags */
+.tag {
+  display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 11px;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.tag-cuisine { background: #E8F5E9; color: var(--forest); }
+.tag-diff-Easy { background: #E8F5E9; color: #2D5A3D; }
+.tag-diff-Medium { background: #FFF3E0; color: #E65100; }
+.tag-diff-Hard { background: #FFEBEE; color: #C62828; }
+
+/* Planner grid */
+.planner-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
+@media (max-width: 768px) { .planner-grid { grid-template-columns: repeat(2, 1fr); } }
+.day-col { min-width: 0; }
+.day-col.day-off { opacity: 0.45; filter: grayscale(0.5); }
+.day-header { font-family: 'Playfair Display', serif; font-size: 14px; padding: 8px; text-align: center; background: var(--charcoal); color: var(--gold); border-radius: 8px 8px 0 0; position: relative; }
+.day-header.off { background: #6b6b6b; }
+.day-off-toggle {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 32px; height: 18px; border-radius: 10px; border: none; cursor: pointer;
+  background: #5a7d62; transition: background 0.2s; padding: 0;
+}
+.day-off-toggle.off { background: #a0522d; }
+.day-off-toggle::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  transition: transform 0.2s;
+}
+.day-off-toggle.off::after { transform: translateX(14px); }
+.day-servings-bar {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 6px 4px; background: var(--warm); font-size: 11px; color: var(--charcoal);
+  border-bottom: 1px solid var(--border);
+}
+.day-servings-bar span { font-weight: 600; min-width: 14px; text-align: center; }
+.day-srv-btn {
+  width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--border);
+  background: #fff; cursor: pointer; font-size: 13px; display: flex; align-items: center;
+  justify-content: center; transition: all 0.15s; padding: 0; line-height: 1;
+}
+.day-srv-btn:hover { border-color: var(--terracotta); color: var(--terracotta); }
+.day-off-banner {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 16px 8px; font-size: 12px; color: var(--soft-brown); font-style: italic;
+  text-align: center;
+}
+.meal-slot {
+  border: 1.5px dashed var(--border); border-radius: 8px; padding: 8px; margin: 4px 0;
+  min-height: 50px; cursor: pointer; transition: all 0.15s; font-size: 12px;
+}
+.meal-slot:hover { border-color: var(--terracotta); background: rgba(196,101,74,0.04); }
+.meal-slot.filled { border-style: solid; border-color: var(--forest); background: #f0f7f2; }
+.meal-slot-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--soft-brown); font-weight: 600; margin-bottom: 4px; }
+
+/* Shopping */
+.shop-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #f0ebe3; }
+.shop-check { width: 20px; height: 20px; accent-color: var(--forest); cursor: pointer; }
+.shop-item.checked span { text-decoration: line-through; opacity: 0.5; }
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 100;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.modal {
+  background: var(--card-bg); border-radius: 16px; padding: 24px; max-width: 600px;
+  width: 100%; max-height: 85vh; overflow-y: auto; position: relative;
+}
+.modal-close {
+  position: sticky; top: 0; float: right; background: var(--card-bg); border: none;
+  font-size: 28px; cursor: pointer; color: var(--soft-brown); width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center; border-radius: 50%;
+  transition: background 0.15s; z-index: 10; margin-top: -24px; margin-right: -12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.modal-close:hover { background: rgba(0,0,0,0.06); }
+
+/* Toggle */
+.toggle-wrap { display: inline-flex; background: var(--warm); border-radius: 8px; padding: 3px; }
+.toggle-opt {
+  padding: 6px 16px; border-radius: 6px; border: none; cursor: pointer;
+  font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+  background: transparent; color: var(--soft-brown); transition: all 0.15s;
+}
+.toggle-opt.active { background: #fff; color: var(--charcoal); box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+
+/* Search */
+.search-bar {
+  position: relative;
+}
+.search-bar input { padding-left: 38px; }
+.search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--soft-brown); }
+
+/* Filters row */
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; }
+
+/* AI box */
+.ai-box {
+  background: linear-gradient(135deg, #2C2C2C 0%, #3D3028 100%); border-radius: 12px;
+  padding: 20px; color: #fff; margin-bottom: 20px;
+}
+.ai-box h3 { color: var(--gold); margin-bottom: 8px; }
+.ai-input-row { display: flex; gap: 8px; }
+.ai-input {
+  flex: 1; padding: 10px 14px; border-radius: 8px; border: 1px solid #555;
+  background: rgba(255,255,255,0.1); color: #fff; font-family: 'DM Sans', sans-serif; font-size: 14px; outline: none;
+}
+.ai-input::placeholder { color: #999; }
+.ai-input:focus { border-color: var(--gold); }
+
+/* Recipe detail */
+.recipe-detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.recipe-meta { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.servings-ctrl { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.servings-btn {
+  width: 28px; height: 28px; border-radius: 50%; border: 1.5px solid var(--border);
+  background: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center;
+  justify-content: center; transition: all 0.15s;
+}
+.servings-btn:hover { border-color: var(--terracotta); color: var(--terracotta); }
+
+/* Ingredient row in form */
+.ing-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+.ing-row input, .ing-row select { font-size: 13px; padding: 8px; }
+.ing-row .ing-qty { width: 60px; }
+.ing-row .ing-unit { width: 80px; }
+.ing-row .ing-name { flex: 1; }
+.remove-btn { background: none; border: none; cursor: pointer; color: #ccc; font-size: 18px; padding: 4px; }
+.remove-btn:hover { color: #e74c3c; }
+
+/* Steps in form */
+.step-row { display: flex; gap: 6px; align-items: flex-start; margin-bottom: 6px; }
+.step-num { min-width: 28px; height: 28px; border-radius: 50%; background: var(--warm); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; margin-top: 8px; }
+
+/* Animations */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: fadeIn 0.25s ease-out; }
+
+/* Loading spinner */
+.spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+`;
+
+// ─── EMPTY RECIPE ──────────────────────────────────────────────
+const emptyRecipe = () => ({
+  id: uid(), name: "", cuisine: "Italian", difficulty: "Easy",
+  prepTime: 15, cookTime: 30, servings: 4,
+  ingredients: [{ id: uid(), name: "", qty: 1, unit: "" }],
+  steps: [""],
+});
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+function App() {
+  const [tab, setTab] = useState("recipes");
+  const [recipes, setRecipes] = useState([]);
+  const [mealPlan, setMealPlan] = useState({});
+  const [dayOff, setDayOff] = useState({});
+  const [dayServings, setDayServings] = useState({});
+  const [extraItems, setExtraItems] = useState([]);
+  const [checkedItems, setCheckedItems] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+
+  // Load from storage + set up real-time sync listeners
+  useEffect(() => {
+    (async () => {
+      const r = await store.get("recipes-db");
+      const m = await store.get("meal-plan");
+      const e = await store.get("extra-items");
+      const c = await store.get("checked-items");
+      const dOff = await store.get("day-off");
+      const dSrv = await store.get("day-servings");
+      if (r && r.length > 0) {
+        const existingIds = new Set(r.map(x => x.id));
+        const missing = STARTER_RECIPES.filter(s => !existingIds.has(s.id));
+        if (missing.length > 0) {
+          const merged = [...r, ...missing];
+          setRecipes(merged);
+          store.set("recipes-db", merged);
+        } else {
+          setRecipes(r);
+        }
+      }
+      else { setRecipes(STARTER_RECIPES); store.set("recipes-db", STARTER_RECIPES); }
+      if (m) setMealPlan(m);
+      if (e) setExtraItems(e);
+      if (c) setCheckedItems(c);
+      if (dOff) setDayOff(dOff);
+      if (dSrv) setDayServings(dSrv);
+      const savedKey = await store.get("api-key");
+      if (savedKey) setApiKey(savedKey);
+      setLoaded(true);
+    })();
+
+    // Real-time sync: listen for changes from other devices
+    const unsubs = [
+      store.onSnapshot("recipes-db", (val) => { if (val) setRecipes(val); }),
+      store.onSnapshot("meal-plan", (val) => { if (val) setMealPlan(val); }),
+      store.onSnapshot("extra-items", (val) => { if (val) setExtraItems(val); }),
+      store.onSnapshot("checked-items", (val) => { if (val) setCheckedItems(val); }),
+      store.onSnapshot("day-off", (val) => { if (val) setDayOff(val); }),
+      store.onSnapshot("day-servings", (val) => { if (val) setDayServings(val); }),
+    ];
+    return () => unsubs.forEach(u => u && u());
+  }, []);
+
+  // Save helpers
+  const saveRecipes = useCallback((r) => { setRecipes(r); store.set("recipes-db", r); }, []);
+  const saveMealPlan = useCallback((m) => { setMealPlan(m); store.set("meal-plan", m); }, []);
+  const saveDayOff = useCallback((d) => { setDayOff(d); store.set("day-off", d); }, []);
+  const saveDayServings = useCallback((d) => { setDayServings(d); store.set("day-servings", d); }, []);
+  const saveExtraItems = useCallback((e) => { setExtraItems(e); store.set("extra-items", e); }, []);
+  const saveCheckedItems = useCallback((c) => { setCheckedItems(c); store.set("checked-items", c); }, []);
+
+  if (!loaded) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", fontFamily: "'Playfair Display', serif", fontSize: 24, color: "#C4654A" }}><style>{css}</style>Loading your kitchen...</div>;
+
+  const saveApiKey = (key) => { setApiKey(key); store.set("api-key", key); };
+
+  return (
+    <div className="app-wrap">
+      <style>{css}</style>
+      <nav className="nav-bar">
+        <h1>🍽 Mise en Place</h1>
+        {["recipes", "planner", "shopping"].map(t => (
+          <button key={t} className={`nav-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
+            {t === "recipes" ? "📖 Recipes" : t === "planner" ? "📅 Meal Plan" : "🛒 Shopping"}
+          </button>
+        ))}
+        <button className={`nav-btn ${tab === "settings" ? "active" : ""}`} onClick={() => setTab("settings")}>⚙️</button>
+      </nav>
+      <div className="main">
+        {tab === "recipes" && <RecipesTab recipes={recipes} saveRecipes={saveRecipes} mealPlan={mealPlan} saveMealPlan={saveMealPlan} apiKey={apiKey} />}
+        {tab === "planner" && <PlannerTab recipes={recipes} mealPlan={mealPlan} saveMealPlan={saveMealPlan} dayOff={dayOff} saveDayOff={saveDayOff} dayServings={dayServings} saveDayServings={saveDayServings} />}
+        {tab === "shopping" && <ShoppingTab recipes={recipes} mealPlan={mealPlan} dayOff={dayOff} dayServings={dayServings} extraItems={extraItems} saveExtraItems={saveExtraItems} checkedItems={checkedItems} saveCheckedItems={saveCheckedItems} />}
+        {tab === "settings" && (
+          <div className="fade-in">
+            <h2 style={{ fontSize: 24, marginBottom: 16 }}>Settings</h2>
+            <div className="card" style={{ maxWidth: 500 }}>
+              <h3 style={{ fontSize: 16, marginBottom: 8 }}>🔑 Anthropic API Key</h3>
+              <p style={{ fontSize: 13, color: "#8B7355", marginBottom: 12 }}>Required for AI recipe suggestions and photo scanning. Get your key from <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" style={{ color: "var(--terracotta)" }}>console.anthropic.com</a></p>
+              <input
+                className="input"
+                type="password"
+                value={apiKey}
+                onChange={e => saveApiKey(e.target.value)}
+                placeholder="sk-ant-..."
+                style={{ marginBottom: 8 }}
+              />
+              <p style={{ fontSize: 12, color: apiKey ? "var(--forest)" : "#aaa" }}>{apiKey ? "✓ API key saved" : "No API key set — AI features will not work"}</p>
+            </div>
+            <div className="card" style={{ maxWidth: 500, marginTop: 12 }}>
+              <h3 style={{ fontSize: 16, marginBottom: 8 }}>📊 Data</h3>
+              <p style={{ fontSize: 13, color: "#8B7355", marginBottom: 12 }}>Your recipes, meal plans and shopping lists are saved in your browser's local storage.</p>
+              <p style={{ fontSize: 13, marginBottom: 8 }}>{recipes.length} recipes saved</p>
+              <button className="btn btn-outline btn-sm" onClick={() => {
+                const data = { recipes, mealPlan, dayOff, dayServings, extraItems };
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a"); a.href = url; a.download = "mise-en-place-backup.json"; a.click();
+                URL.revokeObjectURL(url);
+              }}>💾 Export Backup</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RECIPES TAB
+// ═══════════════════════════════════════════════════════════════
+function RecipesTab({ recipes, saveRecipes, mealPlan, saveMealPlan, apiKey }) {
+  const [search, setSearch] = useState("");
+  const [filterCuisine, setFilterCuisine] = useState("");
+  const [filterDiff, setFilterDiff] = useState("");
+  const [filterMealTag, setFilterMealTag] = useState("");
+  const [filterTime, setFilterTime] = useState("");
+  const [editing, setEditing] = useState(null); // recipe obj or null
+  const [viewing, setViewing] = useState(null);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState(null);
+  const [aiOptions, setAiOptions] = useState(null); // array of 3 recipe options from text AI
+  const [editMode, setEditMode] = useState(false);
+  const [photoLoading, setPhotoLoading] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [photoName, setPhotoName] = useState("");
+  const [photoSource, setPhotoSource] = useState("");
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const photoInputRef = useRef(null);
+  const photoLibRef = useRef(null);
+
+  const filtered = recipes.filter(r => {
+    if (search && !r.name.toLowerCase().includes(search.toLowerCase())) return false;
+    if (filterCuisine && r.cuisine !== filterCuisine) return false;
+    if (filterDiff && r.difficulty !== filterDiff) return false;
+    if (filterMealTag && r.mealTag !== filterMealTag) return false;
+    if (filterTime) {
+      const total = (r.prepTime || 0) + (r.cookTime || 0);
+      if (filterTime === "15" && total > 15) return false;
+      if (filterTime === "30" && total > 30) return false;
+      if (filterTime === "45" && total > 45) return false;
+      if (filterTime === "60" && total > 60) return false;
+      if (filterTime === "60+" && total <= 60) return false;
+    }
+    return true;
+  });
+
+  const handleDelete = (id) => {
+    const updated = recipes.filter(r => r.id !== id);
+    saveRecipes(updated);
+  };
+  const handleSave = (recipe) => {
+    const idx = recipes.findIndex(r => r.id === recipe.id);
+    if (idx >= 0) { const copy = [...recipes]; copy[idx] = recipe; saveRecipes(copy); }
+    else saveRecipes([...recipes, recipe]);
+    setEditing(null);
+  };
+
+  // AI recipe generation — 3 options
+  const generateRecipe = async () => {
+    if (!aiPrompt.trim()) return;
+    if (!apiKey) { alert("Please add your Anthropic API key in Settings (⚙️) to use AI features."); return; }
+    setAiLoading(true);
+    setAiResult(null);
+    setAiOptions(null);
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4000,
+          system: "You are a recipe generator. You respond ONLY with valid JSON, no markdown, no backticks, no explanation. All measurements must be metric (g, kg, ml, l). Small amounts can use tsp/tbsp. Convert cups to ml, oz to g, lb to g. Temperatures in celsius.",
+          messages: [{ role: "user", content: `Give me 3 different recipe options for: "${aiPrompt}". Each should be a distinct variation (e.g. different cuisines, cooking methods, or flavour profiles). Return a JSON array of 3 recipes: [{"name":"...","mealTag":"Dinner|Breakfast|Meal Prep|Snack|Bakery","cuisine":"Italian|Mexican|Asian|Indian|American|Mediterranean|French|Thai|Japanese|Other","difficulty":"Easy|Medium|Hard","prepTime":number,"cookTime":number,"servings":number,"ingredients":[{"name":"...","qty":number,"unit":"g|kg|ml|l|tsp|tbsp|piece|pinch|clove|can|bunch|slice|"}],"steps":["...","..."]},...]` }],
+        }),
+      });
+      const data = await resp.json();
+      if (data.error) {
+        console.error("API error:", data.error);
+        alert("AI generation failed: " + (data.error.message || "Unknown error"));
+        setAiLoading(false);
+        return;
+      }
+      const text = (data.content || []).map(i => i.text || "").join("");
+      if (!text) { alert("No response from AI. Please try again."); setAiLoading(false); return; }
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      const options = (Array.isArray(parsed) ? parsed : [parsed]).map(r => ({
+        ...r,
+        id: uid(),
+        source: "AI Recipe Suggestion",
+        ingredients: (r.ingredients || []).map(i => ({ ...i, id: uid() })),
+      }));
+      setAiOptions(options);
+    } catch (e) {
+      console.error("Generate error:", e);
+      alert("AI generation failed. Please try again.");
+    }
+    setAiLoading(false);
+  };
+
+  const selectAiOption = (option) => {
+    setAiResult(option);
+  };
+
+  const saveAiRecipe = () => {
+    if (!aiResult) return;
+    const toSave = { ...aiResult };
+    if (photoName.trim()) toSave.name = photoName.trim();
+    if (photoSource.trim()) toSave.source = photoSource.trim();
+    const updated = [...recipes, toSave];
+    saveRecipes(updated);
+    // If we came from AI options, go back to the picker (minus the saved one)
+    if (aiOptions) {
+      const remaining = aiOptions.filter(o => o.id !== aiResult.id);
+      setAiResult(null);
+      if (remaining.length > 0) {
+        setAiOptions(remaining);
+      } else {
+        setAiOptions(null);
+        setAiPrompt("");
+      }
+    } else {
+      // Photo scan or single result — clear everything
+      setAiResult(null);
+      setAiOptions(null);
+      setAiPrompt("");
+      setPhotoPreview(null);
+      setPhotoName("");
+      setPhotoSource("");
+    }
+  };
+
+  // Photo scan
+  const handlePhotoSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const dataUrl = ev.target.result;
+      const base64 = dataUrl.split(",")[1];
+      const mediaType = file.type || "image/jpeg";
+      if (!apiKey) { alert("Please add your Anthropic API key in Settings (⚙️) to use AI features."); return; }
+      setPhotoPreview(dataUrl);
+      setPhotoLoading(true);
+      setAiResult(null);
+      try {
+        const resp = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 2000,
+            system: "You extract recipes from images. You respond ONLY with valid JSON, no markdown, no backticks, no explanation. All measurements must be metric (g, kg, ml, l). Small amounts can use tsp/tbsp. Convert cups to ml, oz to g, lb to g. Temperatures in celsius. Read handwriting carefully.",
+            messages: [{
+              role: "user",
+              content: [
+                { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+                { type: "text", text: `Extract the recipe. JSON format: {"name":"...","mealTag":"Dinner|Breakfast|Meal Prep|Snack|Bakery","cuisine":"Italian|Mexican|Asian|Indian|American|Mediterranean|French|Thai|Japanese|Other","difficulty":"Easy|Medium|Hard","prepTime":number,"cookTime":number,"servings":number,"ingredients":[{"name":"...","qty":number,"unit":"g|kg|ml|l|tsp|tbsp|piece|pinch|clove|can|bunch|slice|"}],"steps":["...","..."]}. If no recipe found respond: {"error":"what you see instead"}.` }
+              ]
+            }],
+          }),
+        });
+        const data = await resp.json();
+        if (data.error) {
+          console.error("API error:", data.error);
+          alert("Photo scan failed: " + (data.error.message || "Unknown error"));
+          setPhotoLoading(false);
+          return;
+        }
+        const text = (data.content || []).map(i => i.text || "").join("");
+        if (!text) { alert("No response from AI. Please try again."); setPhotoLoading(false); return; }
+        const clean = text.replace(/```json|```/g, "").trim();
+        const parsed = JSON.parse(clean);
+        if (parsed.error) {
+          alert("Couldn't read a recipe from that image: " + parsed.error);
+        } else {
+          parsed.id = uid();
+          parsed.ingredients = (parsed.ingredients || []).map(i => ({ ...i, id: uid() }));
+          setAiResult(parsed);
+        }
+      } catch (e) {
+        console.error("Photo scan error:", e);
+        alert("Failed to scan the recipe. Please try again with a clearer photo.");
+      }
+      setPhotoLoading(false);
+    };
+    reader.readAsDataURL(file);
+    // Reset input so same file can be selected again
+    e.target.value = "";
+  };
+
+  return (
+    <div className="fade-in">
+      {/* AI suggestion + Photo scan */}
+      <div className="ai-box">
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          {/* Left: AI text generation */}
+          <div style={{ flex: "1 1 280px" }}>
+            <h3>✨ AI Recipe Suggestions</h3>
+            <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>Describe what you're craving and get a full recipe generated.</p>
+            <div className="ai-input-row">
+              <input className="ai-input" placeholder="e.g. quick Asian noodle dish, cozy Italian soup..." value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} onKeyDown={e => e.key === "Enter" && generateRecipe()} />
+              <button className="btn btn-primary" onClick={generateRecipe} disabled={aiLoading || photoLoading} style={{ minWidth: 100 }}>
+                {aiLoading ? <span className="spinner" /> : "Generate"}
+              </button>
+            </div>
+          </div>
+
+          {/* Right: Photo scan */}
+          <div style={{ flex: "0 0 220px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", borderLeft: "1px solid rgba(255,255,255,0.1)", paddingLeft: 16 }}>
+            <h3 style={{ fontSize: 15, marginBottom: 6 }}>📸 Scan a Recipe</h3>
+            <p style={{ fontSize: 11, opacity: 0.6, marginBottom: 10, textAlign: "center" }}>Cookbook, handwritten card, or screenshot</p>
+            {/* Hidden input for camera */}
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              ref={photoInputRef}
+              onChange={handlePhotoSelect}
+              style={{ display: "none" }}
+            />
+            {/* Hidden input for photo library (no capture attr) */}
+            <input
+              type="file"
+              accept="image/*"
+              ref={photoLibRef}
+              onChange={handlePhotoSelect}
+              style={{ display: "none" }}
+            />
+            <div style={{ display: "flex", gap: 6, width: "100%" }}>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => photoInputRef.current?.click()}
+                disabled={photoLoading || aiLoading}
+                style={{ flex: 1, fontSize: 12, padding: "8px 6px" }}
+              >
+                {photoLoading ? <span className="spinner" /> : "📷 Take Photo"}
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => photoLibRef.current?.click()}
+                disabled={photoLoading || aiLoading}
+                style={{ flex: 1, fontSize: 12, padding: "8px 6px" }}
+              >
+                🖼 Library
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* AI 3-option picker */}
+        {aiOptions && aiOptions.length > 0 && !aiResult && (
+          <div style={{ marginTop: 16 }}>
+            <p style={{ fontSize: 14, color: "#D4A853", fontWeight: 600, marginBottom: 10 }}>Pick one of these 3 options:</p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}>
+              {aiOptions.map((opt, idx) => (
+                <div
+                  key={opt.id}
+                  onClick={() => selectAiOption(opt)}
+                  style={{
+                    background: "rgba(255,255,255,0.07)", borderRadius: 10, padding: 14,
+                    cursor: "pointer", border: "1.5px solid rgba(255,255,255,0.1)",
+                    transition: "all 0.15s",
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--gold)"; e.currentTarget.style.background = "rgba(255,255,255,0.12)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.1)"; e.currentTarget.style.background = "rgba(255,255,255,0.07)"; }}
+                >
+                  <div style={{ fontSize: 11, color: "#D4A853", fontWeight: 600, marginBottom: 4 }}>Option {idx + 1}</div>
+                  <h4 style={{ color: "#fff", fontSize: 15, marginBottom: 6, lineHeight: 1.3 }}>{opt.name}</h4>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+                    <span className="tag tag-cuisine" style={{ fontSize: 10 }}>{opt.cuisine}</span>
+                    <span className={`tag tag-diff-${opt.difficulty}`} style={{ fontSize: 10 }}>{opt.difficulty}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#aaa", lineHeight: 1.4 }}>
+                    <span>⏱ {opt.prepTime + opt.cookTime}m</span>
+                    <span style={{ margin: "0 6px" }}>·</span>
+                    <span>{opt.ingredients.length} ingredients</span>
+                    <span style={{ margin: "0 6px" }}>·</span>
+                    <span>{opt.steps.length} steps</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button className="btn btn-outline btn-sm" style={{ color: "#ccc", borderColor: "#555", marginTop: 10 }} onClick={() => setAiOptions(null)}>Dismiss all</button>
+          </div>
+        )}
+
+        {/* Photo preview + optional name/source */}
+        {photoPreview && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
+              <img src={photoPreview} alt="Recipe photo" style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: "2px solid rgba(255,255,255,0.2)" }} />
+              <div style={{ flex: 1 }}>
+                {photoLoading && <p style={{ fontSize: 13, color: "#D4A853" }}>🔍 Reading recipe from your photo...</p>}
+                {!photoLoading && aiResult && <p style={{ fontSize: 13, color: "#6BCB77" }}>✅ Recipe scanned — review below and hit <strong>Add Recipe</strong></p>}
+                {!photoLoading && !aiResult && <p style={{ fontSize: 13, color: "#aaa" }}>Waiting for scan results...</p>}
+              </div>
+              <button className="btn btn-outline btn-sm" style={{ color: "#ccc", borderColor: "#555" }} onClick={() => { setPhotoPreview(null); setAiResult(null); setPhotoName(""); setPhotoSource(""); }}>Clear</button>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <input
+                className="ai-input"
+                placeholder="Recipe name (optional — AI will guess if blank)"
+                value={photoName}
+                onChange={e => setPhotoName(e.target.value)}
+                style={{ flex: "1 1 180px", fontSize: 13 }}
+              />
+              <input
+                className="ai-input"
+                placeholder="Source — e.g. RecipeTin Eats, cookbook p.12..."
+                value={photoSource}
+                onChange={e => setPhotoSource(e.target.value)}
+                style={{ flex: "1 1 180px", fontSize: 13 }}
+              />
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={saveAiRecipe}
+                disabled={!aiResult || photoLoading}
+                style={{ whiteSpace: "nowrap" }}
+              >
+                ✓ Add Recipe
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* AI / Photo result details */}
+        {aiResult && (
+          <div style={{ marginTop: 12, background: "rgba(255,255,255,0.08)", borderRadius: 10, padding: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8 }}>
+              <div>
+                <h4 style={{ color: "#fff" }}>{photoName.trim() || aiResult.name}</h4>
+                {photoSource.trim() && <p style={{ fontSize: 12, color: "#D4A853", marginTop: 2 }}>📖 {photoSource}</p>}
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button className="btn btn-primary btn-sm" style={{ fontSize: 11 }} onClick={saveAiRecipe}>✓ Save to Recipes</button>
+                <button className="btn btn-outline btn-sm" style={{ color: "#ccc", borderColor: "#555", fontSize: 11 }} onClick={() => { const r = { ...aiResult }; if (photoName.trim()) r.name = photoName.trim(); if (photoSource.trim()) r.source = photoSource.trim(); setEditing(r); setAiResult(null); setAiOptions(null); setPhotoPreview(null); setPhotoName(""); setPhotoSource(""); }}>Edit First</button>
+                {aiOptions ? (
+                  <button className="btn btn-outline btn-sm" style={{ color: "#ccc", borderColor: "#555", fontSize: 11 }} onClick={() => setAiResult(null)}>← Back to Options</button>
+                ) : (
+                  <button className="btn btn-outline btn-sm" style={{ color: "#ccc", borderColor: "#555", fontSize: 11 }} onClick={() => { setAiResult(null); setPhotoPreview(null); setPhotoName(""); setPhotoSource(""); }}>Discard</button>
+                )}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6, margin: "8px 0", flexWrap: "wrap" }}>
+              <span className="tag tag-cuisine">{aiResult.cuisine}</span>
+              <span className={`tag tag-diff-${aiResult.difficulty}`}>{aiResult.difficulty}</span>
+              <span className="tag" style={{ background: "rgba(255,255,255,0.15)", color: "#ddd" }}>{aiResult.prepTime + aiResult.cookTime} min</span>
+            </div>
+            <p style={{ fontSize: 13, color: "#ccc", marginBottom: 4 }}><strong>Ingredients:</strong> {aiResult.ingredients.map(i => `${i.qty} ${i.unit} ${i.name}`).join(", ")}</p>
+            <p style={{ fontSize: 13, color: "#ccc" }}><strong>Steps:</strong> {aiResult.steps.length} steps</p>
+          </div>
+        )}
+      </div>
+
+      {/* Search & filters */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+        <h2 style={{ fontSize: 24 }}>My Recipes <span style={{ fontSize: 14, color: "#8B7355", fontFamily: "'DM Sans'" }}>({recipes.length})</span></h2>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className={`btn btn-sm ${editMode ? "btn-danger" : "btn-outline"}`} onClick={() => { setEditMode(!editMode); setPendingDeleteId(null); }}>
+            {editMode ? "✓ Done" : "🗑 Manage"}
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={() => setEditing(emptyRecipe())}>+ Add Recipe</button>
+        </div>
+      </div>
+      <div className="search-bar" style={{ marginBottom: 8 }}>
+        <span className="search-icon">🔍</span>
+        <input className="input" style={{ paddingLeft: 38 }} placeholder="Search recipes..." value={search} onChange={e => setSearch(e.target.value)} />
+      </div>
+      <div className="filters">
+        <select className="select" style={{ width: "auto", minWidth: 120 }} value={filterMealTag} onChange={e => setFilterMealTag(e.target.value)}>
+          <option value="">All Types</option>
+          {MEAL_TAGS.map(t => <option key={t} value={t}>{MEAL_TAG_STYLES[t].icon} {t}</option>)}
+        </select>
+        <select className="select" style={{ width: "auto", minWidth: 120 }} value={filterCuisine} onChange={e => setFilterCuisine(e.target.value)}>
+          <option value="">All Cuisines</option>
+          {CUISINES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select className="select" style={{ width: "auto", minWidth: 120 }} value={filterDiff} onChange={e => setFilterDiff(e.target.value)}>
+          <option value="">All Difficulties</option>
+          {DIFFICULTIES.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <select className="select" style={{ width: "auto", minWidth: 130 }} value={filterTime} onChange={e => setFilterTime(e.target.value)}>
+          <option value="">All Cook Times</option>
+          <option value="15">⏱ Under 15 min</option>
+          <option value="30">⏱ Under 30 min</option>
+          <option value="45">⏱ Under 45 min</option>
+          <option value="60">⏱ Under 1 hour</option>
+          <option value="60+">⏱ Over 1 hour</option>
+        </select>
+        {(filterCuisine || filterDiff || filterMealTag || filterTime || search) && (
+          <button className="btn btn-outline btn-sm" onClick={() => { setSearch(""); setFilterCuisine(""); setFilterDiff(""); setFilterMealTag(""); setFilterTime(""); }}>Clear filters</button>
+        )}
+      </div>
+
+      {/* Recipe grid */}
+      {editMode && (
+        <div style={{ background: "#FFEBEE", borderRadius: 8, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#C62828", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 18 }}>🗑</span>
+          <span>Tap the <strong>×</strong> on any recipe to remove it from your collection. Press <strong>Done</strong> when finished.</span>
+        </div>
+      )}
+      {filtered.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 60, color: "#8B7355" }}>
+          <p style={{ fontSize: 40, marginBottom: 8 }}>📖</p>
+          <p>{recipes.length === 0 ? "Your recipe book is empty. Add your first recipe or let AI suggest one!" : "No recipes match your filters."}</p>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12, marginTop: 12 }}>
+          {filtered.map(r => (
+            <div key={r.id} className="card" style={{ cursor: "pointer", position: "relative", opacity: pendingDeleteId === r.id ? 0.5 : 1, transition: "opacity 0.2s" }} onClick={() => !editMode && setViewing(r)}>
+              {editMode && (
+                pendingDeleteId === r.id ? (
+                  <div style={{ position: "absolute", top: 0, right: 0, left: 0, bottom: 0, background: "rgba(231,76,60,0.95)", borderRadius: 12, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, zIndex: 5 }}
+                    onClick={e => e.stopPropagation()}>
+                    <p style={{ color: "#fff", fontSize: 13, fontWeight: 600 }}>Remove this recipe?</p>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button className="btn btn-sm" style={{ background: "#fff", color: "#e74c3c", fontWeight: 600 }}
+                        onClick={() => { handleDelete(r.id); setPendingDeleteId(null); }}>Yes, remove</button>
+                      <button className="btn btn-sm" style={{ background: "transparent", color: "#fff", border: "1px solid #fff" }}
+                        onClick={() => setPendingDeleteId(null)}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={e => { e.stopPropagation(); setPendingDeleteId(r.id); }}
+                    style={{
+                      position: "absolute", top: 8, right: 8, width: 28, height: 28, borderRadius: "50%",
+                      background: "#e74c3c", color: "#fff", border: "none", cursor: "pointer",
+                      fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center",
+                      boxShadow: "0 2px 6px rgba(0,0,0,0.2)", transition: "transform 0.15s",
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.transform = "scale(1.15)"}
+                    onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+                    title={`Remove ${r.name}`}
+                  >×</button>
+                )
+              )}
+              <h3 style={{ fontSize: 16, marginBottom: 6, paddingRight: editMode ? 32 : 0 }}>{r.name}</h3>
+              {r.source && <p style={{ fontSize: 11, color: "#D4A853", marginBottom: 4 }}>📖 {r.source}</p>}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                {r.mealTag && MEAL_TAG_STYLES[r.mealTag] && (
+                  <span className="tag" style={{ background: MEAL_TAG_STYLES[r.mealTag].bg, color: MEAL_TAG_STYLES[r.mealTag].color }}>{MEAL_TAG_STYLES[r.mealTag].icon} {r.mealTag}</span>
+                )}
+                <span className="tag tag-cuisine">{r.cuisine}</span>
+                <span className={`tag tag-diff-${r.difficulty}`}>{r.difficulty}</span>
+              </div>
+              <div style={{ fontSize: 12, color: "#8B7355", display: "flex", gap: 12 }}>
+                <span>⏱ {r.prepTime + r.cookTime}m</span>
+                <span>🍽 {r.servings} servings</span>
+                <span>{r.ingredients.length} ingredients</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Edit modal */}
+      {editing && (
+        <RecipeFormModal recipe={editing} onSave={handleSave} onClose={() => setEditing(null)} />
+      )}
+
+      {/* View modal */}
+      {viewing && (
+        <RecipeViewModal recipe={viewing} onClose={() => setViewing(null)} onEdit={(r) => { setViewing(null); setEditing(r); }} onDelete={(id) => { setViewing(null); handleDelete(id); }} mealPlan={mealPlan} saveMealPlan={saveMealPlan} />
+      )}
+    </div>
+  );
+}
+
+// ─── RECIPE FORM MODAL ────────────────────────────────────────
+function RecipeFormModal({ recipe, onSave, onClose }) {
+  const [form, setForm] = useState({ ...recipe });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const updateIng = (idx, field, val) => {
+    const ings = [...form.ingredients];
+    ings[idx] = { ...ings[idx], [field]: val };
+    set("ingredients", ings);
+  };
+  const addIng = () => set("ingredients", [...form.ingredients, { id: uid(), name: "", qty: 1, unit: "" }]);
+  const removeIng = (idx) => set("ingredients", form.ingredients.filter((_, i) => i !== idx));
+
+  const updateStep = (idx, val) => { const s = [...form.steps]; s[idx] = val; set("steps", s); };
+  const addStep = () => set("steps", [...form.steps, ""]);
+  const removeStep = (idx) => set("steps", form.steps.filter((_, i) => i !== idx));
+
+  const handleSubmit = () => {
+    if (!form.name.trim()) { alert("Please enter a recipe name."); return; }
+    onSave(form);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal fade-in" onClick={e => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>×</button>
+        <h2 style={{ marginBottom: 16 }}>{recipe.name ? "Edit Recipe" : "New Recipe"}</h2>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355", display: "block", marginBottom: 4 }}>Recipe Name</label>
+        <input className="input" value={form.name} onChange={e => set("name", e.target.value)} placeholder="e.g. Spaghetti Bolognese" style={{ marginBottom: 8 }} />
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355", display: "block", marginBottom: 4 }}>Source <span style={{ fontWeight: 400, opacity: 0.7 }}>(optional)</span></label>
+        <input className="input" value={form.source || ""} onChange={e => set("source", e.target.value)} placeholder="e.g. RecipeTin Eats, Grandma's recipe, BBC Good Food..." style={{ marginBottom: 12 }} />
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Meal Type</label>
+            <select className="select" value={form.mealTag || ""} onChange={e => set("mealTag", e.target.value)}>
+              <option value="">— None —</option>
+              {MEAL_TAGS.map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Cuisine</label>
+            <select className="select" value={form.cuisine} onChange={e => set("cuisine", e.target.value)}>
+              {CUISINES.map(c => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Difficulty</label>
+            <select className="select" value={form.difficulty} onChange={e => set("difficulty", e.target.value)}>
+              {DIFFICULTIES.map(d => <option key={d}>{d}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Prep (min)</label>
+            <input className="input" type="number" min="0" value={form.prepTime} onChange={e => set("prepTime", +e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Cook (min)</label>
+            <input className="input" type="number" min="0" value={form.cookTime} onChange={e => set("cookTime", +e.target.value)} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Servings</label>
+            <input className="input" type="number" min="1" value={form.servings} onChange={e => set("servings", +e.target.value)} />
+          </div>
+        </div>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Ingredients</label>
+        <div style={{ marginBottom: 8 }}>
+          {form.ingredients.map((ing, i) => (
+            <div className="ing-row" key={ing.id}>
+              <input className="input ing-qty" type="number" min="0" step="any" value={ing.qty} onChange={e => updateIng(i, "qty", +e.target.value)} />
+              <select className="select ing-unit" value={ing.unit} onChange={e => updateIng(i, "unit", e.target.value)}>
+                {UNITS.map(u => <option key={u} value={u}>{u || "—"}</option>)}
+              </select>
+              <input className="input ing-name" placeholder="Ingredient name" value={ing.name} onChange={e => updateIng(i, "name", e.target.value)} />
+              <button className="remove-btn" onClick={() => removeIng(i)}>×</button>
+            </div>
+          ))}
+          <button className="btn btn-outline btn-sm" onClick={addIng}>+ Ingredient</button>
+        </div>
+
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#8B7355" }}>Steps</label>
+        <div style={{ marginBottom: 12 }}>
+          {form.steps.map((step, i) => (
+            <div className="step-row" key={i}>
+              <div className="step-num">{i + 1}</div>
+              <textarea className="input" value={step} onChange={e => updateStep(i, e.target.value)} placeholder={`Step ${i + 1}...`} rows={2} style={{ flex: 1 }} />
+              <button className="remove-btn" onClick={() => removeStep(i)} style={{ marginTop: 8 }}>×</button>
+            </div>
+          ))}
+          <button className="btn btn-outline btn-sm" onClick={addStep}>+ Step</button>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" onClick={handleSubmit}>Save Recipe</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── RECIPE VIEW MODAL ────────────────────────────────────────
+function RecipeViewModal({ recipe, onClose, onEdit, onDelete, mealPlan, saveMealPlan }) {
+  const [servings, setServings] = useState(recipe.servings);
+  const ratio = servings / recipe.servings;
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [showPlanner, setShowPlanner] = useState(false);
+  const [planSelections, setPlanSelections] = useState({});
+  const [planSaved, setPlanSaved] = useState(false);
+
+  // BBQ Builder state
+  const [selectedMeats, setSelectedMeats] = useState({});
+  const [selectedSides, setSelectedSides] = useState({});
+
+  const toggleMeat = (id) => setSelectedMeats(p => ({ ...p, [id]: !p[id] }));
+  const toggleSide = (id) => setSelectedSides(p => ({ ...p, [id]: !p[id] }));
+
+  const isBBQ = recipe.bbqBuilder;
+
+  // Build dynamic ingredients for BBQ
+  const bbqIngredients = [];
+  if (isBBQ && recipe.bbqOptions) {
+    recipe.bbqOptions.meats.filter(m => selectedMeats[m.id]).forEach(m => {
+      bbqIngredients.push({ ...m, qty: m.perPerson ? m.qty * servings : m.qty });
+    });
+    recipe.bbqOptions.sides.filter(s => selectedSides[s.id]).forEach(s => {
+      bbqIngredients.push({ ...s, qty: s.perPerson ? s.qty * servings : s.qty });
+    });
+    bbqIngredients.push({ id: "b1", name: "olive oil", qty: 2, unit: "tbsp" });
+    bbqIngredients.push({ id: "b2", name: "salt and pepper", qty: 1, unit: "pinch" });
+  }
+
+  // Planner helpers
+  const isWeekday = (day) => ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].includes(day);
+  const togglePlanSlot = (day, meal) => {
+    const key = `${day}-${meal}`;
+    setPlanSelections(p => ({ ...p, [key]: !p[key] }));
+    setPlanSaved(false);
+  };
+  const selectedCount = Object.values(planSelections).filter(Boolean).length;
+
+  const quickSelect = (slots) => {
+    const sel = {};
+    slots.forEach(s => { sel[s] = true; });
+    setPlanSelections(sel);
+    setPlanSaved(false);
+  };
+
+  const savePlanSelections = () => {
+    const updated = { ...mealPlan };
+    Object.entries(planSelections).forEach(([key, val]) => {
+      if (val) updated[key] = recipe.id;
+    });
+    saveMealPlan(updated);
+    setPlanSaved(true);
+  };
+
+  const slotTaken = (day, meal) => {
+    const key = `${day}-${meal}`;
+    return mealPlan && mealPlan[key] && mealPlan[key] !== recipe.id;
+  };
+  const slotIsThis = (day, meal) => {
+    const key = `${day}-${meal}`;
+    return mealPlan && mealPlan[key] === recipe.id;
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal fade-in" onClick={e => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>×</button>
+
+        <div style={{ paddingRight: 40 }}>
+          <h2 style={{ fontSize: 22 }}>{recipe.name}</h2>
+          {recipe.source && <p style={{ fontSize: 13, color: "var(--soft-brown)", marginTop: 2 }}>📖 {recipe.source}</p>}
+        </div>
+        <div className="recipe-meta">
+          {recipe.mealTag && MEAL_TAG_STYLES[recipe.mealTag] && (
+            <span className="tag" style={{ background: MEAL_TAG_STYLES[recipe.mealTag].bg, color: MEAL_TAG_STYLES[recipe.mealTag].color }}>{MEAL_TAG_STYLES[recipe.mealTag].icon} {recipe.mealTag}</span>
+          )}
+          <span className="tag tag-cuisine">{recipe.cuisine}</span>
+          <span className={`tag tag-diff-${recipe.difficulty}`}>{recipe.difficulty}</span>
+          <span className="tag" style={{ background: "#F3E8FF", color: "#6B21A8" }}>⏱ Prep {recipe.prepTime}m</span>
+          <span className="tag" style={{ background: "#FEF3C7", color: "#92400E" }}>🔥 Cook {recipe.cookTime}m</span>
+        </div>
+
+        <div className="servings-ctrl">
+          <span style={{ fontSize: 13, fontWeight: 600, color: "#8B7355" }}>{isBBQ ? "People:" : "Servings:"}</span>
+          <button className="servings-btn" onClick={() => setServings(Math.max(1, servings - 1))}>−</button>
+          <span style={{ fontWeight: 600, minWidth: 20, textAlign: "center" }}>{servings}</span>
+          <button className="servings-btn" onClick={() => setServings(servings + 1)}>+</button>
+        </div>
+
+        {/* BBQ Builder checkboxes */}
+        {isBBQ && recipe.bbqOptions && (
+          <div style={{ marginBottom: 16 }}>
+            <h4 style={{ fontSize: 14, marginBottom: 8, color: "var(--terracotta)" }}>🥩 Choose Your Meats</h4>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+              {recipe.bbqOptions.meats.map(m => (
+                <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "6px 10px", borderRadius: 8, background: selectedMeats[m.id] ? "#f0f7f2" : "transparent", border: selectedMeats[m.id] ? "1.5px solid var(--forest)" : "1.5px solid var(--border)", transition: "all 0.15s" }}>
+                  <input type="checkbox" checked={!!selectedMeats[m.id]} onChange={() => toggleMeat(m.id)} style={{ width: 18, height: 18, accentColor: "var(--forest)" }} />
+                  <span style={{ fontSize: 14, fontWeight: selectedMeats[m.id] ? 600 : 400 }}>{m.name}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, color: "#8B7355" }}>{m.qty * servings}{m.unit === "piece" ? ` ${m.unit}s` : m.unit} total</span>
+                </label>
+              ))}
+            </div>
+            <h4 style={{ fontSize: 14, marginBottom: 8, color: "var(--forest)" }}>🥗 Choose Your Sides</h4>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 16 }}>
+              {recipe.bbqOptions.sides.map(s => (
+                <label key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "6px 10px", borderRadius: 8, background: selectedSides[s.id] ? "#f0f7f2" : "transparent", border: selectedSides[s.id] ? "1.5px solid var(--forest)" : "1.5px solid var(--border)", transition: "all 0.15s" }}>
+                  <input type="checkbox" checked={!!selectedSides[s.id]} onChange={() => toggleSide(s.id)} style={{ width: 18, height: 18, accentColor: "var(--forest)" }} />
+                  <span style={{ fontSize: 14, fontWeight: selectedSides[s.id] ? 600 : 400 }}>{s.name}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 12, color: "#8B7355" }}>{s.qty * servings}{s.unit === "piece" ? ` ${s.unit}s` : s.unit} total</span>
+                </label>
+              ))}
+            </div>
+
+            {bbqIngredients.length > 2 && (
+              <>
+                <h4 style={{ fontSize: 14, marginBottom: 8 }}>🛒 Shopping List for Your BBQ</h4>
+                <ul style={{ listStyle: "none", marginBottom: 16 }}>
+                  {bbqIngredients.map(ing => (
+                    <li key={ing.id} style={{ padding: "4px 0", fontSize: 14, borderBottom: "1px solid #f0ebe3" }}>
+                      <strong>{Math.round(ing.qty * 100) / 100}</strong> {ing.unit} {ing.name}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Normal ingredients (non-BBQ) */}
+        {!isBBQ && (
+          <>
+            <h4 style={{ fontSize: 14, marginBottom: 8 }}>Ingredients</h4>
+            <ul style={{ listStyle: "none", marginBottom: 16 }}>
+              {recipe.ingredients.filter(i => i.name).map(ing => (
+                <li key={ing.id} style={{ padding: "4px 0", fontSize: 14, borderBottom: "1px solid #f0ebe3" }}>
+                  <strong>{Math.round(ing.qty * ratio * 100) / 100}</strong> {ing.unit} {ing.name}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        <h4 style={{ fontSize: 14, marginBottom: 8 }}>Instructions</h4>
+        <ol style={{ paddingLeft: 20 }}>
+          {recipe.steps.filter(s => s).map((step, i) => (
+            <li key={i} style={{ padding: "6px 0", fontSize: 14, lineHeight: 1.5 }}>{step}</li>
+          ))}
+        </ol>
+
+        {/* Add to Meal Plan */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+          {!showPlanner ? (
+            <button className="btn btn-secondary btn-sm" onClick={() => setShowPlanner(true)}>📅 Add to Meal Plan</button>
+          ) : (
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <h4 style={{ fontSize: 14 }}>📅 Add to Meal Plan</h4>
+                <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => { setShowPlanner(false); setPlanSelections({}); setPlanSaved(false); }}>Close</button>
+              </div>
+
+              {/* Quick select buttons */}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+                <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => quickSelect(DAYS.map(d => `${d}-Dinner`))}>All Dinners</button>
+                <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => quickSelect(DAYS.filter(isWeekday).map(d => `${d}-Lunch`))}>Weekday Lunches</button>
+                <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => quickSelect(DAYS.map(d => `${d}-Breakfast`))}>All Breakfasts</button>
+                <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => quickSelect(DAYS.filter(isWeekday).map(d => `${d}-Breakfast`))}>Weekday Breakfasts</button>
+                <button className="btn btn-outline btn-sm" style={{ fontSize: 11 }} onClick={() => quickSelect(["Monday-Breakfast", "Wednesday-Breakfast", "Friday-Breakfast"])}>Mon/Wed/Fri Brekkie</button>
+                {selectedCount > 0 && <button className="btn btn-outline btn-sm" style={{ fontSize: 11, color: "#aaa" }} onClick={() => { setPlanSelections({}); setPlanSaved(false); }}>Clear</button>}
+              </div>
+
+              {/* Day/meal grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 12 }}>
+                {DAYS.map(day => (
+                  <div key={day} style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "var(--charcoal)", padding: "4px 0", background: "var(--warm)", borderRadius: "6px 6px 0 0" }}>{day.slice(0, 3)}</div>
+                    {["Breakfast", "Lunch", "Dinner"].map(meal => {
+                      if (meal === "Lunch" && !isWeekday(day)) return <div key={meal} style={{ height: 32 }} />;
+                      const key = `${day}-${meal}`;
+                      const selected = !!planSelections[key];
+                      const taken = slotTaken(day, meal);
+                      const alreadyThis = slotIsThis(day, meal);
+                      return (
+                        <div
+                          key={meal}
+                          onClick={() => !taken && !alreadyThis && togglePlanSlot(day, meal)}
+                          style={{
+                            fontSize: 10, padding: "6px 2px", margin: "2px 0", borderRadius: 4,
+                            cursor: taken || alreadyThis ? "default" : "pointer",
+                            textAlign: "center", transition: "all 0.15s", lineHeight: 1.2,
+                            background: alreadyThis ? "#d4edda" : selected ? "var(--forest)" : taken ? "#f5f0eb" : "#fff",
+                            color: alreadyThis ? "#2D5A3D" : selected ? "#fff" : taken ? "#ccc" : "var(--soft-brown)",
+                            border: `1.5px solid ${alreadyThis ? "var(--forest)" : selected ? "var(--forest)" : "var(--border)"}`,
+                          }}
+                        >
+                          {meal === "Breakfast" ? "Brkfst" : meal === "Lunch" ? "Lunch" : "Dinner"}
+                          {alreadyThis && " ✓"}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+
+              {/* Save button */}
+              {selectedCount > 0 && (
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <button className="btn btn-primary btn-sm" onClick={savePlanSelections}>
+                    Add to {selectedCount} slot{selectedCount > 1 ? "s" : ""}
+                  </button>
+                  {planSaved && <span style={{ fontSize: 13, color: "var(--forest)", fontWeight: 600 }}>✓ Added to meal plan!</span>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Action buttons at the bottom */}
+        <div style={{ display: "flex", gap: 8, marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)", alignItems: "center" }}>
+          {!isBBQ && <button className="btn btn-outline btn-sm" onClick={() => onEdit(recipe)}>✏️ Edit Recipe</button>}
+          {!confirmDel ? (
+            <button className="btn btn-danger btn-sm" onClick={() => setConfirmDel(true)}>🗑 Delete Recipe</button>
+          ) : (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 13, color: "#C62828", fontWeight: 600 }}>Are you sure?</span>
+              <button className="btn btn-danger btn-sm" onClick={() => onDelete(recipe.id)}>Yes, delete</button>
+              <button className="btn btn-outline btn-sm" onClick={() => setConfirmDel(false)}>Cancel</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PLANNER TAB
+// ═══════════════════════════════════════════════════════════════
+function PlannerTab({ recipes, mealPlan, saveMealPlan, dayOff, saveDayOff, dayServings, saveDayServings }) {
+  const [picker, setPicker] = useState(null); // { day, meal }
+  const DEFAULT_SERVINGS = 5;
+
+  const assign = (day, meal, recipeId) => {
+    const key = `${day}-${meal}`;
+    saveMealPlan({ ...mealPlan, [key]: recipeId });
+    setPicker(null);
+  };
+
+  const clear = (day, meal) => {
+    const key = `${day}-${meal}`;
+    const copy = { ...mealPlan };
+    delete copy[key];
+    saveMealPlan(copy);
+  };
+
+  const clearAll = () => { if (confirm("Clear the entire meal plan?")) saveMealPlan({}); };
+
+  const getRecipeName = (id) => { const r = recipes.find(r => r.id === id); return r ? r.name : "Unknown"; };
+
+  const isWeekday = (day) => ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].includes(day);
+
+  const toggleDayOff = (day) => {
+    saveDayOff({ ...dayOff, [day]: !dayOff[day] });
+  };
+
+  const getDayServings = (day) => dayServings[day] || DEFAULT_SERVINGS;
+
+  const adjustServings = (day, delta) => {
+    const current = getDayServings(day);
+    const next = Math.max(1, current + delta);
+    saveDayServings({ ...dayServings, [day]: next });
+  };
+
+  return (
+    <div className="fade-in">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+        <div>
+          <h2 style={{ fontSize: 24 }}>Weekly Meal Plan</h2>
+          <p style={{ fontSize: 12, color: "#8B7355", marginTop: 2 }}>Toggle days off when eating out. Adjust servings per day for guests or smaller households.</p>
+        </div>
+        <button className="btn btn-outline btn-sm" onClick={clearAll}>Clear Week</button>
+      </div>
+
+      {recipes.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 40, color: "#8B7355" }}>
+          <p style={{ fontSize: 36, marginBottom: 8 }}>📅</p>
+          <p>Add some recipes first, then come back to plan your week!</p>
+        </div>
+      ) : (
+        <div className="planner-grid">
+          {DAYS.map(day => {
+            const off = !!dayOff[day];
+            const srv = getDayServings(day);
+            return (
+              <div key={day} className={`day-col ${off ? "day-off" : ""}`}>
+                <div className={`day-header ${off ? "off" : ""}`}>
+                  {day.slice(0, 3)}
+                  <button
+                    className={`day-off-toggle ${off ? "off" : ""}`}
+                    onClick={() => toggleDayOff(day)}
+                    title={off ? "Turn day back on" : "Mark as day off / eating out"}
+                  />
+                </div>
+
+                {off ? (
+                  <div className="day-off-banner">🍷 Out / Day Off</div>
+                ) : (
+                  <>
+                    {/* Servings adjuster */}
+                    <div className="day-servings-bar">
+                      <button className="day-srv-btn" onClick={() => adjustServings(day, -1)}>−</button>
+                      <span>{srv}</span>
+                      <button className="day-srv-btn" onClick={() => adjustServings(day, 1)}>+</button>
+                      <span style={{ fontWeight: 400, color: "#8B7355", marginLeft: 2 }}>ppl</span>
+                    </div>
+
+                    {MEAL_TYPES.map(meal => {
+                      if (meal === "Lunch" && !isWeekday(day)) return null;
+                      const key = `${day}-${meal}`;
+                      const rid = mealPlan[key];
+                      return (
+                        <div key={meal} className={`meal-slot ${rid ? "filled" : ""}`} onClick={() => !rid && setPicker({ day, meal })}>
+                          <div className="meal-slot-label">{meal}</div>
+                          {rid ? (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 12, fontWeight: 500, lineHeight: 1.3 }}>{getRecipeName(rid)}</span>
+                              <button className="remove-btn" style={{ fontSize: 14 }} onClick={e => { e.stopPropagation(); clear(day, meal); }}>×</button>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: 11, color: "#bbb" }}>+ Add</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Legend */}
+      <div style={{ marginTop: 16, display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11, color: "#8B7355" }}>
+        <span>🟢 Toggle = day on</span>
+        <span>🔴 Toggle = day off (excluded from shopping list)</span>
+        <span>👥 Adjust people count to scale ingredients</span>
+      </div>
+
+      {/* Recipe picker modal */}
+      {picker && (
+        <div className="modal-overlay" onClick={() => setPicker(null)}>
+          <div className="modal fade-in" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
+            <button className="modal-close" onClick={() => setPicker(null)}>×</button>
+            <h3 style={{ marginBottom: 4 }}>Pick a recipe</h3>
+            <p style={{ fontSize: 13, color: "#8B7355", marginBottom: 12 }}>{picker.day} — {picker.meal}</p>
+            <div style={{ maxHeight: 400, overflowY: "auto" }}>
+              {recipes.map(r => (
+                <div key={r.id} className="card" style={{ marginBottom: 8, cursor: "pointer", padding: 12 }} onClick={() => assign(picker.day, picker.meal, r.id)}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
+                  <div style={{ fontSize: 11, color: "#8B7355", marginTop: 2 }}>{r.cuisine} · {r.prepTime + r.cookTime}m · {r.difficulty}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SHOPPING TAB
+// ═══════════════════════════════════════════════════════════════
+function ShoppingTab({ recipes, mealPlan, dayOff, dayServings, extraItems, saveExtraItems, checkedItems, saveCheckedItems }) {
+  const [groupBy, setGroupBy] = useState("aisle");
+  const [newItem, setNewItem] = useState("");
+  const DEFAULT_SERVINGS = 5;
+
+  // Build shopping list from meal plan, respecting dayOff and dayServings
+  const buildList = () => {
+    const items = {}; // key: normalized name, value: { name, qty, unit, recipes: [] }
+    const byRecipe = {}; // recipeId-day -> { name, items, day }
+    const mealPrepCounted = {}; // track meal prep recipes already counted (only count once)
+
+    Object.entries(mealPlan).forEach(([key, recipeId]) => {
+      // Parse "Monday-Dinner" -> day = "Monday"
+      const dashIdx = key.indexOf("-");
+      const day = key.substring(0, dashIdx);
+
+      // Skip days that are toggled off
+      if (dayOff[day]) return;
+
+      const recipe = recipes.find(r => r.id === recipeId);
+      if (!recipe) return;
+
+      // Meal Prep recipes: only count ingredients ONCE (batch cook, portion out)
+      const isMealPrep = recipe.mealTag === "Meal Prep";
+      if (isMealPrep && mealPrepCounted[recipeId]) {
+        // Still track it in byRecipe for display, but don't add ingredients again
+        const recipeKey = `${recipeId}-${day}`;
+        if (!byRecipe[recipeKey]) byRecipe[recipeKey] = { name: recipe.name, day, items: [], mealPrepDuplicate: true };
+        return;
+      }
+      if (isMealPrep) mealPrepCounted[recipeId] = true;
+
+      // Calculate serving ratio for this day
+      const plannedServings = dayServings[day] || DEFAULT_SERVINGS;
+      const ratio = isMealPrep
+        ? 1 // Meal prep uses the recipe's own serving size (user decides batch size)
+        : plannedServings / (recipe.servings || DEFAULT_SERVINGS);
+
+      const recipeKey = `${recipeId}-${day}`;
+      if (!byRecipe[recipeKey]) byRecipe[recipeKey] = { name: recipe.name, day, items: [] };
+
+      // For BBQ builder recipes, use all bbqOptions as ingredients
+      const ingredientList = recipe.bbqBuilder && recipe.bbqOptions
+        ? [
+            ...recipe.bbqOptions.meats.map(m => ({ ...m, qty: m.perPerson ? m.qty * plannedServings : m.qty })),
+            ...recipe.bbqOptions.sides.map(s => ({ ...s, qty: s.perPerson ? s.qty * plannedServings : s.qty })),
+            { id: "b1", name: "olive oil", qty: 2, unit: "tbsp" },
+          ]
+        : recipe.ingredients.filter(i => i.name.trim()).map(ing => ({ ...ing, qty: ing.qty * ratio }));
+
+      ingredientList.forEach(ing => {
+        const norm = ing.name.toLowerCase().trim();
+        byRecipe[recipeKey].items.push({ name: ing.name, qty: ing.qty, unit: ing.unit });
+        if (!items[norm]) items[norm] = { name: ing.name, qty: 0, unit: ing.unit, aisle: guessAisle(ing.name), recipes: [] };
+        items[norm].qty += ing.qty;
+        const label = isMealPrep
+          ? `${recipe.name} (📦 batch)`
+          : `${recipe.name} (${day.slice(0,3)})`;
+        if (!items[norm].recipes.includes(label)) items[norm].recipes.push(label);
+      });
+    });
+
+    return { flat: Object.values(items), byRecipe };
+  };
+
+  const { flat, byRecipe } = buildList();
+
+  // Group by aisle
+  const byAisle = {};
+  AISLES.forEach(a => { byAisle[a] = []; });
+  flat.forEach(item => {
+    const a = item.aisle || "Other";
+    if (!byAisle[a]) byAisle[a] = [];
+    byAisle[a].push(item);
+  });
+
+  const toggleCheck = (key) => {
+    const copy = { ...checkedItems, [key]: !checkedItems[key] };
+    saveCheckedItems(copy);
+  };
+
+  const addExtra = () => {
+    if (!newItem.trim()) return;
+    saveExtraItems([...extraItems, { id: uid(), name: newItem.trim() }]);
+    setNewItem("");
+  };
+
+  const removeExtra = (id) => saveExtraItems(extraItems.filter(i => i.id !== id));
+
+  const totalItems = flat.length + extraItems.length;
+  const checkedCount = Object.values(checkedItems).filter(Boolean).length;
+  const daysOffList = DAYS.filter(d => dayOff[d]);
+  const servingsNote = DAYS.filter(d => !dayOff[d] && dayServings[d] && dayServings[d] !== DEFAULT_SERVINGS);
+
+  return (
+    <div className="fade-in">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+        <h2 style={{ fontSize: 24 }}>Shopping List <span style={{ fontSize: 14, color: "#8B7355", fontFamily: "'DM Sans'" }}>({checkedCount}/{totalItems} done)</span></h2>
+        <div className="toggle-wrap">
+          <button className={`toggle-opt ${groupBy === "aisle" ? "active" : ""}`} onClick={() => setGroupBy("aisle")}>By Aisle</button>
+          <button className={`toggle-opt ${groupBy === "recipe" ? "active" : ""}`} onClick={() => setGroupBy("recipe")}>By Recipe</button>
+        </div>
+      </div>
+
+      {/* Context bar */}
+      {(daysOffList.length > 0 || servingsNote.length > 0) && (
+        <div style={{ background: "#FEF3C7", borderRadius: 8, padding: "8px 12px", marginBottom: 12, fontSize: 12, color: "#92400E", display: "flex", flexWrap: "wrap", gap: 12 }}>
+          {daysOffList.length > 0 && (
+            <span>🍷 Days off: {daysOffList.map(d => d.slice(0,3)).join(", ")} — excluded from list</span>
+          )}
+          {servingsNote.length > 0 && (
+            <span>👥 Custom servings: {servingsNote.map(d => `${d.slice(0,3)} (${dayServings[d]}ppl)`).join(", ")}</span>
+          )}
+        </div>
+      )}
+
+      {flat.length === 0 && extraItems.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 40, color: "#8B7355" }}>
+          <p style={{ fontSize: 36, marginBottom: 8 }}>🛒</p>
+          <p>Your shopping list is empty. Assign recipes to your meal plan to auto-generate it!</p>
+        </div>
+      ) : groupBy === "aisle" ? (
+        <>
+          {AISLES.map(aisle => {
+            const items = byAisle[aisle];
+            if (!items || items.length === 0) return null;
+            return (
+              <div key={aisle} className="card" style={{ marginBottom: 12 }}>
+                <h3 style={{ fontSize: 15, marginBottom: 8, color: "var(--forest)" }}>{aisle}</h3>
+                {items.map(item => {
+                  const key = `aisle-${item.name.toLowerCase()}`;
+                  return (
+                    <div key={key} className={`shop-item ${checkedItems[key] ? "checked" : ""}`}>
+                      <input type="checkbox" className="shop-check" checked={!!checkedItems[key]} onChange={() => toggleCheck(key)} />
+                      <span style={{ flex: 1, fontSize: 14 }}>
+                        <strong>{Math.round(item.qty * 100) / 100} {item.unit}</strong> {item.name}
+                      </span>
+                      <span style={{ fontSize: 11, color: "#aaa" }}>{item.recipes.join(", ")}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </>
+      ) : (
+        <>
+          {Object.entries(byRecipe).filter(([, data]) => !data.mealPrepDuplicate).map(([rid, data]) => (
+            <div key={rid} className="card" style={{ marginBottom: 12 }}>
+              <h3 style={{ fontSize: 15, marginBottom: 4, color: "var(--forest)" }}>{data.name} <span style={{ fontSize: 12, fontWeight: 400, color: "#8B7355" }}>({data.day})</span></h3>
+              {data.items.length === 0 && data.mealPrepDuplicate && (
+                <p style={{ fontSize: 12, color: "#8B7355", fontStyle: "italic" }}>📦 Batch cooked — ingredients counted once above</p>
+              )}
+              {data.items.map((item, i) => {
+                const key = `recipe-${rid}-${item.name.toLowerCase()}-${i}`;
+                return (
+                  <div key={key} className={`shop-item ${checkedItems[key] ? "checked" : ""}`}>
+                    <input type="checkbox" className="shop-check" checked={!!checkedItems[key]} onChange={() => toggleCheck(key)} />
+                    <span style={{ fontSize: 14 }}><strong>{Math.round(item.qty * 100) / 100} {item.unit}</strong> {item.name}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* Extra items */}
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3 style={{ fontSize: 15, marginBottom: 8, color: "var(--soft-brown)" }}>🛍 Extra Items</h3>
+        {extraItems.map(item => {
+          const key = `extra-${item.id}`;
+          return (
+            <div key={item.id} className={`shop-item ${checkedItems[key] ? "checked" : ""}`}>
+              <input type="checkbox" className="shop-check" checked={!!checkedItems[key]} onChange={() => toggleCheck(key)} />
+              <span style={{ flex: 1, fontSize: 14 }}>{item.name}</span>
+              <button className="remove-btn" onClick={() => removeExtra(item.id)}>×</button>
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <input className="input" placeholder="Add an item..." value={newItem} onChange={e => setNewItem(e.target.value)} onKeyDown={e => e.key === "Enter" && addExtra()} style={{ flex: 1 }} />
+          <button className="btn btn-outline btn-sm" onClick={addExtra}>Add</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
